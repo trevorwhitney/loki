@@ -74,9 +74,9 @@ func (l cacheKeyLimits) GenerateCacheKey(ctx context.Context, userID string, r q
 		currentInterval = r.GetStart() / denominator
 	}
 
-	if l.transformer != nil {
-		userID = l.transformer(ctx, userID)
-	}
+	// if l.transformer != nil {
+	// 	userID = l.transformer(ctx, userID)
+	// }
 
 	// include both the currentInterval and the split duration in key to ensure
 	// a cache key can't be reused when an interval changes

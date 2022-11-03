@@ -232,6 +232,7 @@ func (s resultsCache) Do(ctx context.Context, r Request) (Response, error) {
 
 	cached, ok := s.get(ctx, key)
 	if ok {
+		fmt.Printf("!!! cache hit for key %s\n", key)
 		response, extents, err = s.handleHit(ctx, r, cached, maxCacheTime)
 	} else {
 		response, extents, err = s.handleMiss(ctx, r, maxCacheTime)
@@ -240,11 +241,17 @@ func (s resultsCache) Do(ctx context.Context, r Request) (Response, error) {
 	if err == nil && len(extents) > 0 {
 		extents, err := s.filterRecentExtents(r, maxCacheFreshness, extents)
 		if err != nil {
+			fmt.Printf("!!! early return due to extents filter error: %v\n", err)
 			return nil, err
 		}
 		s.put(ctx, key, extents)
 	}
 
+	cacheResult := "miss"
+	if ok {
+		cacheResult = "hit"
+	}
+	fmt.Printf("!!! cache %s for key %s: %#v\n", cacheResult, key, response)
 	return response, err
 }
 
