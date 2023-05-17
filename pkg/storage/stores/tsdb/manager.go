@@ -175,7 +175,14 @@ func (m *tsdbManager) buildFromHead(heads *tenantHeads, shipper indexshipper.Ind
 		for pd, matchingChks := range pds {
 			b, ok := periods[pd]
 			if !ok {
-				b = NewBuilder()
+        // Assuming all chunks for a given period have the same
+        // TSDBIndexVersion. Does this assumption need to be enforced?
+				firstChk := matchingChks[0]
+				if v := indexVersion(firstChk.From(), firstChk.Through(), tableRanges); v != -1 {
+					b = NewBuilderWithIndexVersion(v)
+				} else {
+					b = NewBuilder()
+				}
 				periods[pd] = b
 			}
 
@@ -303,4 +310,17 @@ func indexBuckets(from, through model.Time, tableRanges config.TableRanges) (res
 		level.Warn(util_log.Logger).Log("err", "could not find config for table(s) from: %d, through %d", start, end)
 	}
 	return
+}
+
+func indexVersion(from, through model.Time, tableRanges config.TableRanges) (int) {
+	start := from.Time().UnixNano() / int64(config.ObjectStorageIndexRequiredPeriod)
+	end := through.Time().UnixNano() / int64(config.ObjectStorageIndexRequiredPeriod)
+	for cur := start; cur <= end; cur++ {
+		cfg := tableRanges.ConfigForTableNumber(cur)
+		if cfg != nil {
+      return int(cfg.TSDBIndexVersion)
+		}
+	}
+
+	return -1
 }

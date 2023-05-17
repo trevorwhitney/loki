@@ -23,6 +23,7 @@ import (
 // that chunks must be added in order and not duplicated
 type Builder struct {
 	streams         map[string]*stream
+	indexVersion         int
 	chunksFinalized bool
 }
 
@@ -33,7 +34,14 @@ type stream struct {
 }
 
 func NewBuilder() *Builder {
-	return &Builder{streams: make(map[string]*stream)}
+	return NewBuilderWithIndexVersion(0)
+}
+
+func NewBuilderWithIndexVersion(version int) *Builder {
+	return &Builder{
+		streams: make(map[string]*stream),
+		indexVersion: version,
+	}
 }
 
 func (b *Builder) AddSeries(ls labels.Labels, fp model.Fingerprint, chks []index.ChunkMeta) {
@@ -95,12 +103,14 @@ func (b *Builder) BuildWithVersion(
 	return b.buildWithVersion(ctx, version, scratchDir, createFn)
 }
 
+// BOOKMARK: this is the primary funciton used to build a ?? and it passes 0 as the version
+// which results in a writer using the default "LiveVersion"
 func (b *Builder) Build(
 	ctx context.Context,
 	scratchDir string,
 	createFn func(from, through model.Time, checksum uint32) Identifier,
 ) (id Identifier, err error) {
-	return b.buildWithVersion(ctx, 0, scratchDir, createFn)
+	return b.buildWithVersion(ctx, b.indexVersion, scratchDir, createFn)
 }
 
 func (b *Builder) buildWithVersion(
