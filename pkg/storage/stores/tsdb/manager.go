@@ -157,7 +157,7 @@ func (m *tsdbManager) buildFromHead(heads *tenantHeads, shipper indexshipper.Ind
 	if err := heads.forAll(func(user string, ls labels.Labels, fp uint64, chks index.ChunkMetas) error {
 
 		// chunks may overlap index period bounds, in which case they're written to multiple
-		pds := make(map[string]index.ChunkMetas)
+		pds := make(map[indexBucketWithVersion]index.ChunkMetas)
 		for _, chk := range chks {
 			idxBuckets := indexBuckets(chk.From(), chk.Through(), tableRanges)
 
@@ -173,17 +173,10 @@ func (m *tsdbManager) buildFromHead(heads *tenantHeads, shipper indexshipper.Ind
 
 		// Add the chunks to all relevant builders
 		for pd, matchingChks := range pds {
-			b, ok := periods[pd]
+			b, ok := periods[pd.tableName]
 			if !ok {
-        // Assuming all chunks for a given period have the same
-        // TSDBIndexVersion. Does this assumption need to be enforced?
-				firstChk := matchingChks[0]
-				if v := indexVersion(firstChk.From(), firstChk.Through(), tableRanges); v != -1 {
-					b = NewBuilderWithIndexVersion(v)
-				} else {
-					b = NewBuilder()
-				}
-				periods[pd] = b
+				b = NewBuilder(pd.version)
+				periods[pd.tableName] = b
 			}
 
 			b.AddSeries(
@@ -297,13 +290,21 @@ func (m *tsdbManager) BuildFromWALs(t time.Time, ids []WALIdentifier, legacy boo
 	return nil
 }
 
-func indexBuckets(from, through model.Time, tableRanges config.TableRanges) (res []string) {
+type indexBucketWithVersion struct {
+	tableName   string
+	version int
+}
+
+func indexBuckets(from, through model.Time, tableRanges config.TableRanges) (res []indexBucketWithVersion) {
 	start := from.Time().UnixNano() / int64(config.ObjectStorageIndexRequiredPeriod)
 	end := through.Time().UnixNano() / int64(config.ObjectStorageIndexRequiredPeriod)
 	for cur := start; cur <= end; cur++ {
 		cfg := tableRanges.ConfigForTableNumber(cur)
 		if cfg != nil {
-			res = append(res, cfg.IndexTables.Prefix+strconv.Itoa(int(cur)))
+			res = append(res, indexBucketWithVersion{
+				cfg.IndexTables.Prefix + strconv.Itoa(int(cur)),
+				cfg.TSDBIndexVersion,
+			})
 		}
 	}
 	if len(res) == 0 {
@@ -312,15 +313,15 @@ func indexBuckets(from, through model.Time, tableRanges config.TableRanges) (res
 	return
 }
 
-func indexVersion(from, through model.Time, tableRanges config.TableRanges) (int) {
+func indexVersion(from, through model.Time, tableRanges config.TableRanges) int {
 	start := from.Time().UnixNano() / int64(config.ObjectStorageIndexRequiredPeriod)
 	end := through.Time().UnixNano() / int64(config.ObjectStorageIndexRequiredPeriod)
 	for cur := start; cur <= end; cur++ {
 		cfg := tableRanges.ConfigForTableNumber(cur)
 		if cfg != nil {
-      return int(cfg.TSDBIndexVersion)
+			return cfg.TSDBIndexVersion
 		}
 	}
 
-	return -1
+	return 0
 }

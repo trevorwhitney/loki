@@ -730,7 +730,9 @@ func (t *tenantHeads) tenantIndex(userID string, from, through model.Time) (idx 
 		return
 	}
 
-	idx = NewTSDBIndex(tenant.indexRange(int64(from), int64(through)))
+  //TODO: need to get version from period config, from, and through
+  version := 0
+	idx = NewTSDBIndex(tenant.indexRange(int64(from), int64(through)), version)
 	if t.chunkFilter != nil {
 		idx.SetChunkFilterer(t.chunkFilter)
 	}

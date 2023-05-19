@@ -117,7 +117,7 @@ func (m *mockIndexSet) SetCompactedIndex(compactedIndex compactor.CompactedIndex
 
 func setupMultiTenantIndex(t *testing.T, userStreams map[string][]stream, destDir string, ts time.Time) string {
 	require.NoError(t, util.EnsureDirectory(destDir))
-	b := NewBuilder()
+	b := NewBuilder(index.LiveFormat)
 	for userID, streams := range userStreams {
 		for _, stream := range streams {
 			lb := labels.NewBuilder(stream.labels)
@@ -155,7 +155,7 @@ func setupMultiTenantIndex(t *testing.T, userStreams map[string][]stream, destDi
 
 func setupPerTenantIndex(t *testing.T, streams []stream, destDir string, ts time.Time) string {
 	require.NoError(t, util.EnsureDirectory(destDir))
-	b := NewBuilder()
+	b := NewBuilder(index.LiveFormat)
 	for _, stream := range streams {
 		b.AddSeries(
 			stream.labels,
@@ -868,8 +868,8 @@ func setupCompactedIndex(t *testing.T) *testContext {
 		Configs: []config.PeriodConfig{periodConfig},
 	}
 	indexBuckets := indexBuckets(now, now, []config.TableRange{periodConfig.GetIndexTableNumberRange(config.DayTime{Time: now})})
-	tableName := indexBuckets[0]
-	tableInterval := retention.ExtractIntervalFromTableName(tableName)
+	table := indexBuckets[0]
+	tableInterval := retention.ExtractIntervalFromTableName(table.index)
 	// shiftTableStart shift tableInterval.Start by the given amount of milliseconds.
 	// It is used for building chunkmetas relative to start time of the table.
 	shiftTableStart := func(ms int64) int64 {
@@ -881,7 +881,7 @@ func setupCompactedIndex(t *testing.T) *testContext {
 	userID := buildUserID(0)
 
 	buildCompactedIndex := func() *compactedIndex {
-		builder := NewBuilder()
+		builder := NewBuilder(table.version)
 		stream := buildStream(lbls1, buildChunkMetas(shiftTableStart(0), shiftTableStart(10)), "")
 		builder.AddSeries(stream.labels, stream.fp, stream.chunks)
 
@@ -890,7 +890,7 @@ func setupCompactedIndex(t *testing.T) *testContext {
 
 		builder.FinalizeChunks()
 
-		return newCompactedIndex(context.Background(), tableName, buildUserID(0), t.TempDir(), periodConfig, builder)
+		return newCompactedIndex(context.Background(), table.index, buildUserID(0), t.TempDir(), periodConfig, builder)
 	}
 
 	expectedChunkEntries := map[string][]retention.ChunkEntry{

@@ -44,12 +44,16 @@ func RebuildWithVersion(ctx context.Context, path string, desiredVer int) (index
 		}
 	}()
 
-	currVer := indexFile.(*TSDBFile).Index.(*TSDBIndex).reader.(*index.Reader).Version()
+	currVer, err := indexFile.(*TSDBFile).Version(ctx)
+	if err != nil {
+		return nil, err
+	}
+
 	if currVer == desiredVer {
 		return nil, ErrAlreadyOnDesiredVersion
 	}
 
-	builder := NewBuilder()
+	builder := NewBuilder(desiredVer)
 	err = indexFile.(*TSDBFile).Index.(*TSDBIndex).ForSeries(ctx, nil, 0, math.MaxInt64, func(lbls labels.Labels, fp model.Fingerprint, chks []index.ChunkMeta) {
 		builder.AddSeries(lbls.Copy(), fp, chks)
 	}, labels.MustNewMatcher(labels.MatchEqual, "", ""))
@@ -59,7 +63,7 @@ func RebuildWithVersion(ctx context.Context, path string, desiredVer int) (index
 
 	parentDir := filepath.Dir(path)
 
-	id, err := builder.BuildWithVersion(ctx, desiredVer, parentDir, func(from, through model.Time, checksum uint32) Identifier {
+	id, err := builder.Build(ctx, parentDir, func(from, through model.Time, checksum uint32) Identifier {
 		id := SingleTenantTSDBIdentifier{
 			TS:       time.Now(),
 			From:     from,
@@ -109,6 +113,10 @@ func (f *TSDBFile) Reader() (io.ReadSeeker, error) {
 	return f.getRawFileReader()
 }
 
+func (f *TSDBFile) Version(ctx context.Context) (int, error) {
+	return f.Index.Version(ctx)
+}
+
 // nolint
 // TSDBIndex is backed by an IndexReader
 // and translates the IndexReader to an Index implementation
@@ -116,6 +124,7 @@ func (f *TSDBFile) Reader() (io.ReadSeeker, error) {
 type TSDBIndex struct {
 	reader      IndexReader
 	chunkFilter chunk.RequestChunkFilterer
+	version     int
 }
 
 // Return the index as well as the underlying raw file reader which isn't exposed as an index
@@ -126,14 +135,19 @@ func NewTSDBIndexFromFile(location string) (*TSDBIndex, GetRawFileReaderFunc, er
 		return nil, nil, err
 	}
 
-	return NewTSDBIndex(reader), func() (io.ReadSeeker, error) {
+	return NewTSDBIndex(reader, reader.Version()), func() (io.ReadSeeker, error) {
 		return reader.RawFileReader()
 	}, nil
 }
 
-func NewTSDBIndex(reader IndexReader) *TSDBIndex {
+func NewTSDBIndex(reader IndexReader, version int) *TSDBIndex {
+	if version == 0 {
+		version = index.LiveFormat
+	}
+
 	return &TSDBIndex{
-		reader: reader,
+		reader:  reader,
+		version: version,
 	}
 }
 
@@ -307,5 +321,8 @@ func (i *TSDBIndex) Stats(ctx context.Context, userID string, from, through mode
 		}
 		return p.Err()
 	})
+}
 
+func (i *TSDBIndex) Version(ctx context.Context) (int, error) {
+	return i.version, nil
 }

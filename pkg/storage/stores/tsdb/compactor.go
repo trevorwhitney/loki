@@ -47,7 +47,7 @@ func (i indexProcessor) OpenCompactedIndexFile(ctx context.Context, path, tableN
 		}
 	}()
 
-	builder := NewBuilder()
+	builder := NewBuilder(periodConfig.TSDBIndexVersion)
 	err = indexFile.(*TSDBFile).Index.(*TSDBIndex).ForSeries(ctx, nil, 0, math.MaxInt64, func(lbls labels.Labels, fp model.Fingerprint, chks []index.ChunkMeta) {
 		builder.AddSeries(lbls.Copy(), fp, chks)
 	}, labels.MustNewMatcher(labels.MatchEqual, "", ""))
@@ -149,17 +149,21 @@ func (t *tableCompactor) CompactTable() error {
 			}
 		}
 
-		builder, err := setupBuilder(t.ctx, userID, existingUserIndexSet, multiTenantIndices)
+		buildersByIndexVersion, err := setupBuildersByIndexVer(t.ctx, userID, existingUserIndexSet, multiTenantIndices)
 		if err != nil {
 			return err
 		}
 
-		compactedIndex := newCompactedIndex(t.ctx, existingUserIndexSet.GetTableName(), userID, existingUserIndexSet.GetWorkingDir(), t.periodConfig, builder)
-		t.compactedIndexes[userID] = compactedIndex
+		for _, builder := range buildersByIndexVersion {
+			compactedIndex := newCompactedIndex(t.ctx, existingUserIndexSet.GetTableName(), userID, existingUserIndexSet.GetWorkingDir(), t.periodConfig, builder)
+			t.compactedIndexes[userID] = compactedIndex
 
-		if err := existingUserIndexSet.SetCompactedIndex(compactedIndex, true); err != nil {
-			return err
+			if err := existingUserIndexSet.SetCompactedIndex(compactedIndex, true); err != nil {
+				return err
+			}
 		}
+
+		return nil
 	}
 
 	// go through existingUserIndexSet and find the ones that were not initialized now due to no updates and
@@ -169,16 +173,20 @@ func (t *tableCompactor) CompactTable() error {
 			continue
 		}
 
-		builder, err := setupBuilder(t.ctx, userID, srcIdxSet, []Index{})
+		buildersByIndexVersion, err := setupBuildersByIndexVer(t.ctx, userID, srcIdxSet, []Index{})
 		if err != nil {
 			return err
 		}
 
-		compactedIndex := newCompactedIndex(t.ctx, srcIdxSet.GetTableName(), userID, srcIdxSet.GetWorkingDir(), t.periodConfig, builder)
-		t.compactedIndexes[userID] = compactedIndex
-		if err := srcIdxSet.SetCompactedIndex(compactedIndex, true); err != nil {
-			return err
+		for _, builder := range buildersByIndexVersion {
+			compactedIndex := newCompactedIndex(t.ctx, srcIdxSet.GetTableName(), userID, srcIdxSet.GetWorkingDir(), t.periodConfig, builder)
+			t.compactedIndexes[userID] = compactedIndex
+			if err := srcIdxSet.SetCompactedIndex(compactedIndex, true); err != nil {
+				return err
+			}
 		}
+
+		return nil
 	}
 
 	if len(multiTenantIndices) > 0 {
@@ -189,15 +197,22 @@ func (t *tableCompactor) CompactTable() error {
 	return nil
 }
 
-// setupBuilder creates a Builder for a single user.
+// setupBuildersByIndexVer creates a Builder for a single user for each applicable TSDB index version in the sourceIndexSet.
 // It combines the users index from multiTenantIndexes and its existing compacted index(es)
-func setupBuilder(ctx context.Context, userID string, sourceIndexSet compactor.IndexSet, multiTenantIndexes []Index) (*Builder, error) {
+func setupBuildersByIndexVer(ctx context.Context, userID string, sourceIndexSet compactor.IndexSet, multiTenantIndexes []Index) (map[int]*Builder, error) {
 	sourceIndexes := sourceIndexSet.ListSourceFiles()
-	builder := NewBuilder()
+	buildersByIndexVersion := make(map[int]*Builder, 0)
 
 	// add users index from multi-tenant indexes to the builder
 	for _, idx := range multiTenantIndexes {
-		err := idx.(*TSDBFile).Index.(*TSDBIndex).ForSeries(ctx, nil, 0, math.MaxInt64, func(lbls labels.Labels, fp model.Fingerprint, chks []index.ChunkMeta) {
+		version, err := idx.Version(ctx)
+		builder, ok := buildersByIndexVersion[version]
+		if !ok {
+			builder = NewBuilder(version)
+			buildersByIndexVersion[version] = builder
+		}
+
+		err = idx.(*TSDBFile).Index.(*TSDBIndex).ForSeries(ctx, nil, 0, math.MaxInt64, func(lbls labels.Labels, fp model.Fingerprint, chks []index.ChunkMeta) {
 			builder.AddSeries(withoutTenantLabel(lbls.Copy()), fp, chks)
 		}, withTenantLabelMatcher(userID, []*labels.Matcher{})...)
 		if err != nil {
@@ -229,6 +244,13 @@ func setupBuilder(ctx context.Context, userID string, sourceIndexSet compactor.I
 			}
 		}()
 
+		version, err := indexFile.(*TSDBFile).Version(ctx)
+		if _, ok := buildersByIndexVersion[version]; !ok {
+			buildersByIndexVersion[version] = NewBuilder(version)
+		}
+
+		builder := buildersByIndexVersion[version]
+
 		err = indexFile.(*TSDBFile).Index.(*TSDBIndex).ForSeries(ctx, nil, 0, math.MaxInt64, func(lbls labels.Labels, fp model.Fingerprint, chks []index.ChunkMeta) {
 			builder.AddSeries(lbls.Copy(), fp, chks)
 		}, labels.MustNewMatcher(labels.MatchEqual, "", ""))
@@ -238,9 +260,11 @@ func setupBuilder(ctx context.Context, userID string, sourceIndexSet compactor.I
 	}
 
 	// finalize the chunks to remove the duplicates and sort them
-	builder.FinalizeChunks()
+	for _, builder := range buildersByIndexVersion {
+		builder.FinalizeChunks()
+	}
 
-	return builder, nil
+	return buildersByIndexVersion, nil
 }
 
 type compactedIndex struct {

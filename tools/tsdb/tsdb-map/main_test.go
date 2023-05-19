@@ -93,7 +93,7 @@ func BenchmarkQuery_GetChunkRefs(b *testing.B) {
 		if err != nil {
 			panic(err)
 		}
-		idx := tsdb.NewTSDBIndex(reader)
+		idx := tsdb.NewTSDBIndex(reader, index.LiveFormat)
 		b.Run(bm.name, func(b *testing.B) {
 			refs := tsdb.ChunkRefsPool.Get()
 			for i := 0; i < b.N; i++ {
@@ -118,7 +118,7 @@ func BenchmarkQuery_GetChunkRefsSharded(b *testing.B) {
 		if err != nil {
 			panic(err)
 		}
-		idx := tsdb.NewTSDBIndex(reader)
+		idx := tsdb.NewTSDBIndex(reader, index.LiveFormat)
 		shardFactor := 16
 
 		b.Run(bm.name, func(b *testing.B) {

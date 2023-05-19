@@ -33,11 +33,7 @@ type stream struct {
 	chunks index.ChunkMetas
 }
 
-func NewBuilder() *Builder {
-	return NewBuilderWithIndexVersion(0)
-}
-
-func NewBuilderWithIndexVersion(version int) *Builder {
+func NewBuilder(version int) *Builder {
 	return &Builder{
 		streams: make(map[string]*stream),
 		indexVersion: version,
@@ -94,17 +90,6 @@ func (b *Builder) DropChunk(streamID string, chk index.ChunkMeta) (bool, error) 
 	return chunkFound, nil
 }
 
-func (b *Builder) BuildWithVersion(
-	ctx context.Context,
-	version int, // build TSDB with specified version. 0 means default version.
-	scratchDir string,
-	createFn func(from, through model.Time, checksum uint32) Identifier,
-) (id Identifier, err error) {
-	return b.buildWithVersion(ctx, version, scratchDir, createFn)
-}
-
-// BOOKMARK: this is the primary funciton used to build a ?? and it passes 0 as the version
-// which results in a writer using the default "LiveVersion"
 func (b *Builder) Build(
 	ctx context.Context,
 	scratchDir string,

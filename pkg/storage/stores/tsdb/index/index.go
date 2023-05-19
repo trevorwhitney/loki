@@ -62,7 +62,10 @@ const (
 
 	millisecondsInHour = int64(time.Hour / time.Millisecond)
 
+  // BOOKMARK: this is the default "live version" of the index
+  // we use when creating a writer
 	// The format that will be written by this process
+  // TODO: change to DefaultFormat
 	LiveFormat = FormatV3
 )
 
@@ -1330,6 +1333,7 @@ func newReader(b ByteSlice, c io.Closer) (*Reader, error) {
 	if m := binary.BigEndian.Uint32(r.b.Range(0, 4)); m != MagicIndex {
 		return nil, errors.Errorf("invalid magic number %x", m)
 	}
+  //BOOKMARK: where we read the version from the index file
 	r.version = int(r.b.Range(4, 5)[0])
 
 	if r.version != FormatV1 && r.version != FormatV2 && r.version != FormatV3 {
