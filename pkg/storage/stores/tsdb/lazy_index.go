@@ -72,3 +72,11 @@ func (f LazyIndex) Stats(ctx context.Context, userID string, from, through model
 	}
 	return i.Stats(ctx, userID, from, through, acc, shard, shouldIncludeChunk, matchers...)
 }
+
+func (f LazyIndex) Versions(ctx context.Context, userID string, from, through model.Time, acc IndexVersionAccumulator) error {
+	i, err := f()
+	if err != nil {
+		return err
+	}
+	return i.Versions(ctx, userID, from, through, acc)
+}

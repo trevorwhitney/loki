@@ -117,7 +117,7 @@ func (m *mockIndexSet) SetCompactedIndex(compactedIndex compactor.CompactedIndex
 
 func setupMultiTenantIndex(t *testing.T, userStreams map[string][]stream, destDir string, ts time.Time) string {
 	require.NoError(t, util.EnsureDirectory(destDir))
-	b := NewBuilder(index.LiveFormat)
+	b := NewBuilder(0)
 	for userID, streams := range userStreams {
 		for _, stream := range streams {
 			lb := labels.NewBuilder(stream.labels)
@@ -155,7 +155,7 @@ func setupMultiTenantIndex(t *testing.T, userStreams map[string][]stream, destDi
 
 func setupPerTenantIndex(t *testing.T, streams []stream, destDir string, ts time.Time) string {
 	require.NoError(t, util.EnsureDirectory(destDir))
-	b := NewBuilder(index.LiveFormat)
+	b := NewBuilder(0)
 	for _, stream := range streams {
 		b.AddSeries(
 			stream.labels,

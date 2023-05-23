@@ -198,7 +198,7 @@ func migrateTable(tableName string, indexStorageClient shipper_storage.Client) e
 			return err
 		}
 
-		idx, err := tsdb.RebuildWithVersion(context.Background(), dst, desiredVer)
+		idx, err := tsdb.RebuildWithVersion(context.Background(), dst, desiredVer, tenant)
 		if err != nil {
 			if errors.Is(err, tsdb.ErrAlreadyOnDesiredVersion) {
 				continue

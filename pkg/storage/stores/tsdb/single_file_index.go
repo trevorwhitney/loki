@@ -32,7 +32,7 @@ func OpenShippableTSDB(p string) (index_shipper.Index, error) {
 	return NewShippableTSDBFile(id)
 }
 
-func RebuildWithVersion(ctx context.Context, path string, desiredVer int) (index_shipper.Index, error) {
+func RebuildWithVersion(ctx context.Context, path string, desiredVer int, userID string) (index_shipper.Index, error) {
 	indexFile, err := OpenShippableTSDB(path)
 	if err != nil {
 		return nil, err
@@ -44,13 +44,16 @@ func RebuildWithVersion(ctx context.Context, path string, desiredVer int) (index
 		}
 	}()
 
-	currVer, err := indexFile.(*TSDBFile).Version(ctx)
+	versions := NewIndexVersionAccumulator(1)
+	err = indexFile.(*TSDBFile).Versions(ctx, userID, 0, math.MaxInt64, versions)
 	if err != nil {
 		return nil, err
 	}
 
-	if currVer == desiredVer {
-		return nil, ErrAlreadyOnDesiredVersion
+	for _, v := range versions.GetVersions() {
+		if v == desiredVer {
+			return nil, ErrAlreadyOnDesiredVersion
+		}
 	}
 
 	builder := NewBuilder(desiredVer)
@@ -113,8 +116,8 @@ func (f *TSDBFile) Reader() (io.ReadSeeker, error) {
 	return f.getRawFileReader()
 }
 
-func (f *TSDBFile) Version(ctx context.Context) (int, error) {
-	return f.Index.Version(ctx)
+func (f *TSDBFile) Versions(ctx context.Context, userID string, from, through model.Time, acc IndexVersionAccumulator) error {
+	return f.Index.Versions(ctx, userID, from, through, acc)
 }
 
 // nolint
@@ -323,6 +326,7 @@ func (i *TSDBIndex) Stats(ctx context.Context, userID string, from, through mode
 	})
 }
 
-func (i *TSDBIndex) Version(ctx context.Context) (int, error) {
-	return i.version, nil
+func (i *TSDBIndex) Versions(ctx context.Context, userID string, from, through model.Time, acc IndexVersionAccumulator) error {
+	acc.AddVersion(i.version)
+	return nil
 }

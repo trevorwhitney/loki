@@ -53,7 +53,30 @@ type Index interface {
 	LabelNames(ctx context.Context, userID string, from, through model.Time, matchers ...*labels.Matcher) ([]string, error)
 	LabelValues(ctx context.Context, userID string, from, through model.Time, name string, matchers ...*labels.Matcher) ([]string, error)
 	Stats(ctx context.Context, userID string, from, through model.Time, acc IndexStatsAccumulator, shard *index.ShardAnnotation, shouldIncludeChunk shouldIncludeChunk, matchers ...*labels.Matcher) error
-  Version(ctx context.Context) (int, error)
+	Versions(ctx context.Context, userID string, from, through model.Time, acc IndexVersionAccumulator) error
+}
+
+type IndexVersionAccumulator interface {
+	AddVersion(version int)
+	GetVersions() []int
+}
+
+func NewIndexVersionAccumulator(capactiy int) IndexVersionAccumulator {
+	return &indexVersionAccumulator{
+		versions: make([]int, 0, capactiy),
+	}
+}
+
+type indexVersionAccumulator struct {
+	versions []int
+}
+
+func (i *indexVersionAccumulator) AddVersion(version int) {
+	i.versions = append(i.versions, version)
+}
+
+func (i *indexVersionAccumulator) GetVersions() []int {
+	return i.versions
 }
 
 type NoopIndex struct{}
@@ -76,6 +99,10 @@ func (NoopIndex) LabelValues(ctx context.Context, userID string, from, through m
 }
 
 func (NoopIndex) Stats(ctx context.Context, userID string, from, through model.Time, acc IndexStatsAccumulator, shard *index.ShardAnnotation, shouldIncludeChunk shouldIncludeChunk, matchers ...*labels.Matcher) error {
+	return nil
+}
+
+func (NoopIndex) Versions(ctx context.Context, userID string, from, through model.Time, acc IndexVersionAccumulator) error {
 	return nil
 }
 

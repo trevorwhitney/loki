@@ -205,18 +205,25 @@ func setupBuildersByIndexVer(ctx context.Context, userID string, sourceIndexSet 
 
 	// add users index from multi-tenant indexes to the builder
 	for _, idx := range multiTenantIndexes {
-		version, err := idx.Version(ctx)
-		builder, ok := buildersByIndexVersion[version]
-		if !ok {
-			builder = NewBuilder(version)
-			buildersByIndexVersion[version] = builder
-		}
-
-		err = idx.(*TSDBFile).Index.(*TSDBIndex).ForSeries(ctx, nil, 0, math.MaxInt64, func(lbls labels.Labels, fp model.Fingerprint, chks []index.ChunkMeta) {
-			builder.AddSeries(withoutTenantLabel(lbls.Copy()), fp, chks)
-		}, withTenantLabelMatcher(userID, []*labels.Matcher{})...)
+		versions := NewIndexVersionAccumulator(len(sourceIndexes))
+		err := idx.Versions(ctx, userID, 0, math.MaxInt64, versions)
 		if err != nil {
 			return nil, err
+		}
+
+		for _, version := range versions.GetVersions() {
+			builder, ok := buildersByIndexVersion[version]
+			if !ok {
+				builder = NewBuilder(version)
+				buildersByIndexVersion[version] = builder
+			}
+
+			err = idx.(*TSDBFile).Index.(*TSDBIndex).ForSeries(ctx, nil, 0, math.MaxInt64, func(lbls labels.Labels, fp model.Fingerprint, chks []index.ChunkMeta) {
+				builder.AddSeries(withoutTenantLabel(lbls.Copy()), fp, chks)
+			}, withTenantLabelMatcher(userID, []*labels.Matcher{})...)
+			if err != nil {
+				return nil, err
+			}
 		}
 	}
 
@@ -244,18 +251,24 @@ func setupBuildersByIndexVer(ctx context.Context, userID string, sourceIndexSet 
 			}
 		}()
 
-		version, err := indexFile.(*TSDBFile).Version(ctx)
-		if _, ok := buildersByIndexVersion[version]; !ok {
-			buildersByIndexVersion[version] = NewBuilder(version)
+		acc := NewIndexVersionAccumulator(len(sourceIndexes))
+		if err := indexFile.(*TSDBFile).Versions(ctx,userID, 0, math.MaxInt64, acc); err == nil {
+			return nil, err
 		}
 
-		builder := buildersByIndexVersion[version]
+		for _, version := range acc.GetVersions() {
+			if _, ok := buildersByIndexVersion[version]; !ok {
+				buildersByIndexVersion[version] = NewBuilder(version)
+			}
 
-		err = indexFile.(*TSDBFile).Index.(*TSDBIndex).ForSeries(ctx, nil, 0, math.MaxInt64, func(lbls labels.Labels, fp model.Fingerprint, chks []index.ChunkMeta) {
-			builder.AddSeries(lbls.Copy(), fp, chks)
-		}, labels.MustNewMatcher(labels.MatchEqual, "", ""))
-		if err != nil {
-			return nil, err
+			builder := buildersByIndexVersion[version]
+
+			err = indexFile.(*TSDBFile).Index.(*TSDBIndex).ForSeries(ctx, nil, 0, math.MaxInt64, func(lbls labels.Labels, fp model.Fingerprint, chks []index.ChunkMeta) {
+				builder.AddSeries(lbls.Copy(), fp, chks)
+			}, labels.MustNewMatcher(labels.MatchEqual, "", ""))
+			if err != nil {
+				return nil, err
+			}
 		}
 	}
 
