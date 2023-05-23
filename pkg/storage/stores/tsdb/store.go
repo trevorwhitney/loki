@@ -124,6 +124,7 @@ func (s *store) init(name string, indexShipperCfg indexshipper.Config, schemaCfg
 			indexShipperCfg.ActiveIndexDirectory,
 			tsdbMetrics,
 			tsdbManager,
+			tableRange,
 		)
 		if err := headManager.Start(); err != nil {
 			return err

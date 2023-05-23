@@ -276,7 +276,7 @@ func (m *tsdbManager) BuildFromWALs(t time.Time, ids []WALIdentifier, legacy boo
 
 	level.Debug(m.log).Log("msg", "recovering tenant heads")
 	for _, id := range ids {
-		tmp := newTenantHeads(id.ts, defaultHeadManagerStripeSize, m.metrics, m.log)
+		tmp := newTenantHeads(id.ts, defaultHeadManagerStripeSize, m.metrics, m.tableRange, m.log)
 		if err = recoverHead(m.name, m.dir, tmp, []WALIdentifier{id}, legacy); err != nil {
 			return errors.Wrap(err, "building TSDB from WALs")
 		}
@@ -291,8 +291,8 @@ func (m *tsdbManager) BuildFromWALs(t time.Time, ids []WALIdentifier, legacy boo
 }
 
 type indexBucketWithVersion struct {
-	tableName   string
-	version int
+	tableName string
+	version   int
 }
 
 func indexBuckets(from, through model.Time, tableRanges config.TableRanges) (res []indexBucketWithVersion) {
@@ -311,17 +311,4 @@ func indexBuckets(from, through model.Time, tableRanges config.TableRanges) (res
 		level.Warn(util_log.Logger).Log("err", "could not find config for table(s) from: %d, through %d", start, end)
 	}
 	return
-}
-
-func indexVersion(from, through model.Time, tableRanges config.TableRanges) int {
-	start := from.Time().UnixNano() / int64(config.ObjectStorageIndexRequiredPeriod)
-	end := through.Time().UnixNano() / int64(config.ObjectStorageIndexRequiredPeriod)
-	for cur := start; cur <= end; cur++ {
-		cfg := tableRanges.ConfigForTableNumber(cur)
-		if cfg != nil {
-			return cfg.TSDBIndexVersion
-		}
-	}
-
-	return 0
 }

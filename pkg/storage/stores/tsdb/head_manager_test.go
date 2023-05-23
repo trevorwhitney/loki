@@ -37,7 +37,7 @@ func newNoopTSDBManager(name, dir string) noopTSDBManager {
 	return noopTSDBManager{
 		name:        name,
 		dir:         dir,
-		tenantHeads: newTenantHeads(time.Now(), defaultHeadManagerStripeSize, NewMetrics(nil), log.NewNopLogger()),
+		tenantHeads: newTenantHeads(time.Now(), defaultHeadManagerStripeSize, NewMetrics(nil), config.TableRange{} , log.NewNopLogger()),
 	}
 }
 
@@ -91,7 +91,7 @@ func chunkMetasToLogProtoChunkRefs(user string, fp uint64, xs index.ChunkMetas) 
 
 // Test append
 func Test_TenantHeads_Append(t *testing.T) {
-	h := newTenantHeads(time.Now(), defaultHeadManagerStripeSize, NewMetrics(nil), log.NewNopLogger())
+	h := newTenantHeads(time.Now(), defaultHeadManagerStripeSize, NewMetrics(nil), config.TableRange{}, log.NewNopLogger())
 	ls := mustParseLabels(`{foo="bar"}`)
 	chks := []index.ChunkMeta{
 		{
@@ -119,7 +119,7 @@ func Test_TenantHeads_Append(t *testing.T) {
 
 // Test multitenant reads
 func Test_TenantHeads_MultiRead(t *testing.T) {
-	h := newTenantHeads(time.Now(), defaultHeadManagerStripeSize, NewMetrics(nil), log.NewNopLogger())
+	h := newTenantHeads(time.Now(), defaultHeadManagerStripeSize, NewMetrics(nil), config.TableRange{}, log.NewNopLogger())
 	ls := mustParseLabels(`{foo="bar"}`)
 	chks := []index.ChunkMeta{
 		{
@@ -519,7 +519,7 @@ func BenchmarkTenantHeads(b *testing.B) {
 		},
 	} {
 		b.Run(fmt.Sprintf("%d", tc.readers), func(b *testing.B) {
-			heads := newTenantHeads(time.Now(), defaultHeadManagerStripeSize, NewMetrics(nil), log.NewNopLogger())
+			heads := newTenantHeads(time.Now(), defaultHeadManagerStripeSize, NewMetrics(nil), config.TableRange{}, log.NewNopLogger())
 			// 1000 series across 100 tenants
 			nTenants := 10
 			for i := 0; i < 1000; i++ {

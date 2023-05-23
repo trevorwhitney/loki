@@ -85,7 +85,7 @@ func Test_BuildFromHead_HasCorrectIndexVersion(t *testing.T) {
 	}
 
 	for _, tc := range tt {
-		tenantHeads := newTenantHeads(time.Now(), defaultHeadManagerStripeSize, NewMetrics(nil), log.NewNopLogger())
+		tenantHeads := newTenantHeads(time.Now(), defaultHeadManagerStripeSize, NewMetrics(nil), config.TableRange{}, log.NewNopLogger())
 		tsdbManager := NewTSDBManager(
 			"foo",
 			"uploader",

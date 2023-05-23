@@ -23,6 +23,7 @@ import (
 
 	"github.com/grafana/loki/pkg/storage/chunk"
 	"github.com/grafana/loki/pkg/storage/chunk/client/util"
+	"github.com/grafana/loki/pkg/storage/config"
 	"github.com/grafana/loki/pkg/storage/stores/tsdb/index"
 	"github.com/grafana/loki/pkg/util/wal"
 )
@@ -109,9 +110,11 @@ type HeadManager struct {
 
 	wg     sync.WaitGroup
 	cancel chan struct{}
+
+	tableRange config.TableRange
 }
 
-func NewHeadManager(name string, logger log.Logger, dir string, metrics *Metrics, tsdbManager TSDBManager) *HeadManager {
+func NewHeadManager(name string, logger log.Logger, dir string, metrics *Metrics, tsdbManager TSDBManager, tableRange config.TableRange) *HeadManager {
 	shards := defaultHeadManagerStripeSize
 	m := &HeadManager{
 		name:        name,
@@ -124,6 +127,8 @@ func NewHeadManager(name string, logger log.Logger, dir string, metrics *Metrics
 		shards: shards,
 
 		cancel: make(chan struct{}),
+
+		tableRange: tableRange,
 	}
 
 	m.Index = LazyIndex(func() (Index, error) {
@@ -366,8 +371,7 @@ func (m *HeadManager) Rotate(t time.Time) (err error) {
 		return errors.Wrapf(err, "creating tsdb wal: %s during rotation", nextWALPath)
 	}
 
-	// create new tenant heads
-	nextHeads := newTenantHeads(t, m.shards, m.metrics, m.log)
+	nextHeads := newTenantHeads(t, m.shards, m.metrics, m.tableRange, m.log)
 
 	m.mtx.Lock()
 	defer m.mtx.Unlock()
@@ -629,16 +633,18 @@ type tenantHeads struct {
 	log         log.Logger
 	chunkFilter chunk.RequestChunkFilterer
 	metrics     *Metrics
+	tableRange  config.TableRange
 }
 
-func newTenantHeads(start time.Time, shards int, metrics *Metrics, logger log.Logger) *tenantHeads {
+func newTenantHeads(start time.Time, shards int, metrics *Metrics, tableRange config.TableRange, logger log.Logger) *tenantHeads {
 	res := &tenantHeads{
-		start:   start,
-		shards:  shards,
-		locks:   make([]sync.RWMutex, shards),
-		tenants: make([]map[string]*Head, shards),
-		log:     log.With(logger, "component", "tenant-heads"),
-		metrics: metrics,
+		start:      start,
+		shards:     shards,
+		locks:      make([]sync.RWMutex, shards),
+		tenants:    make([]map[string]*Head, shards),
+		log:        log.With(logger, "component", "tenant-heads"),
+		metrics:    metrics,
+		tableRange: tableRange,
 	}
 	for i := range res.tenants {
 		res.tenants[i] = make(map[string]*Head)
@@ -730,14 +736,33 @@ func (t *tenantHeads) tenantIndex(userID string, from, through model.Time) (idx 
 		return
 	}
 
-  //TODO: need to get version from period config, from, and through
-  version := 0
-	idx = NewTSDBIndex(tenant.indexRange(int64(from), int64(through)), version)
+	idx = NewTSDBIndex(tenant.indexRange(int64(from), int64(through)), highestVersionForTimeRange(from, through, t.tableRange))
 	if t.chunkFilter != nil {
 		idx.SetChunkFilterer(t.chunkFilter)
 	}
 	return idx, true
+}
 
+func highestVersionForTimeRange(from, through model.Time, tableRange config.TableRange) int {
+	start := from.Time().UnixNano() / int64(config.ObjectStorageIndexRequiredPeriod)
+	end := through.Time().UnixNano() / int64(config.ObjectStorageIndexRequiredPeriod)
+	versions := make([]int, 0, end-start+1)
+
+	for cur := start; cur <= end; cur++ {
+		cfg := tableRange.ConfigForTableNumber(cur)
+		if cfg != nil {
+			versions = append(versions, cfg.TSDBIndexVersion)
+		}
+	}
+
+	version := 0
+	for _, v := range versions {
+		if v > version {
+			version = v
+		}
+	}
+
+	return version
 }
 
 func (t *tenantHeads) GetChunkRefs(ctx context.Context, userID string, from, through model.Time, res []ChunkRef, shard *index.ShardAnnotation, matchers ...*labels.Matcher) ([]ChunkRef, error) {
