@@ -2,6 +2,7 @@ package ingester
 
 import (
 	"bytes"
+	"encoding/gob"
 	"fmt"
 	"net/http"
 	"sync"
@@ -56,7 +57,7 @@ func (i *Ingester) Flush() {
 }
 
 // TransferOut implements ring.FlushTransferer
-// Noop implemenetation because ingesters have a WAL now that does not require transferring chunks any more.
+// Noop implementation because ingesters have a WAL now that does not require transferring chunks any more.
 // We return ErrTransferDisabled to indicate that we don't support transfers, and therefore we may flush on shutdown if configured to do so.
 func (i *Ingester) TransferOut(_ context.Context) error {
 	return ring.ErrTransferDisabled
@@ -152,6 +153,10 @@ func (i *Ingester) flushLoop(j int) {
 			level.Error(util_log.WithUserID(op.userID, i.logger)).Log("msg", "failed to flush", "err", err)
 		}
 
+		//TODO(twhintey): is this the right place to do this?
+		//Treat them like chunks?
+		// err = i.flushUserDetectedFields(op.userID, op.fp)
+
 		// If we're exiting & we failed to flush, put the failed operation
 		// back in the queue at a later point.
 		if op.immediate && err != nil {
@@ -160,6 +165,43 @@ func (i *Ingester) flushLoop(j int) {
 		}
 	}
 }
+
+//func (i *Ingester) flushUserDetectedFields(userID string, fp model.Fingerprint) error {
+//	instance, ok := i.getInstanceByID(userID)
+//	if !ok {
+//		return nil
+//	}
+
+//	stream, found := instance.streams.LoadByFP(fp)
+//	if found {
+//		stream.detectedLabelsMtx.Lock()
+//    defer stream.detectedLabelsMtx.Unlock()
+
+//		lbls := stream.detectedLabels
+
+//    lblsSimple := make(map[string][]string)
+//    for label, values := range lbls {
+//      vals := make([]string, len(values))
+//      for value, _ := range values {
+//        vals = append(vals, value)
+//      }
+//      lblsSimple[label] = vals
+//    }
+
+//    //TODO encode labels into byte slice, then ship it to object storage
+//    b := new(bytes.Buffer)
+//    e := gob.NewEncoder(b)
+
+//    err := e.Encode(lblsSimple)
+//    if err != nil {
+//      return err
+//    }
+
+//    fmt.Printf("flushing detected fields %v\nAs bytes %v\n", lblsSimple, b.Bytes())
+//	}
+
+//	return nil
+//}
 
 func (i *Ingester) flushUserSeries(userID string, fp model.Fingerprint, immediate bool) error {
 	instance, ok := i.getInstanceByID(userID)
@@ -182,6 +224,8 @@ func (i *Ingester) flushUserSeries(userID string, fp model.Fingerprint, immediat
 	if err != nil {
 		return fmt.Errorf("failed to flush chunks: %w, num_chunks: %d, labels: %s", err, len(chunks), lbs)
 	}
+
+	// err = i.flushDetectedFields()
 
 	return nil
 }
@@ -314,6 +358,35 @@ func (i *Ingester) flushChunks(ctx context.Context, fp model.Fingerprint, labelP
 		}
 
 		if err := i.flushChunk(ctx, &ch); err != nil {
+			return err
+		}
+
+		df := c.chunk.DetectedFields()
+		//TODO: serialize detected fields
+		b := new(bytes.Buffer)
+		e := gob.NewEncoder(b)
+
+		err := e.Encode(df)
+		if err != nil {
+			return err
+		}
+
+		dfChk, err := chunkenc.NewByteChunk(b.Bytes(), i.cfg.BlockSize, i.cfg.TargetChunkSize)
+		if err != nil {
+			return err
+		}
+
+		detectedFieldsChunk := chunk.NewChunk(
+			fmt.Sprintf("%s-detected", userID), fp, metric,
+			chunkenc.NewDetectedFieldsFacade(dfChk, i.cfg.BlockSize, i.cfg.TargetChunkSize),
+			firstTime,
+			lastTime)
+
+		if err := i.encodeChunk(ctx, &detectedFieldsChunk, c); err != nil {
+			return err
+		}
+
+		if err := i.flushChunk(ctx, &detectedFieldsChunk); err != nil {
 			return err
 		}
 

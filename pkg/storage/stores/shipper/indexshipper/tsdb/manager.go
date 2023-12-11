@@ -159,6 +159,7 @@ type chunkInfo struct {
 func (m *tsdbManager) buildFromHead(heads *tenantHeads, indexShipper indexshipper.IndexShipper, tableRanges []config.TableRange) (err error) {
 	periods := make(map[string]*Builder)
 
+  //NOTE(twhitney): iterate all the series, with fp and chunk meta
 	if err := heads.forAll(func(user string, ls labels.Labels, fp uint64, chks index.ChunkMetas) error {
 
 		// chunks may overlap index period bounds, in which case they're written to multiple
@@ -230,11 +231,13 @@ func (m *tsdbManager) buildFromHead(heads *tenantHeads, indexShipper indexshippe
 
 		level.Debug(m.log).Log("msg", "finished building tsdb for period", "pd", p, "dst", dst.Path(), "duration", time.Since(start))
 
+    //NOTE(twhitney): this is where the shippable TSDB index file is created
 		loaded, err := NewShippableTSDBFile(dst)
 		if err != nil {
 			return err
 		}
 
+    //NOTE(twhitney): this is where the shippable TSDB index file is sent to object storage
 		if err := indexShipper.AddIndex(p, "", loaded); err != nil {
 			return err
 		}

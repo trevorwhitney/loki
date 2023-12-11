@@ -9,6 +9,7 @@ import (
 	"hash/crc32"
 	"io"
 	"reflect"
+	"sync"
 	"time"
 	"unsafe"
 
@@ -137,6 +138,67 @@ type MemChunk struct {
 
 	// compressed size of chunk. Set when chunk is cut or while decoding chunk from storage.
 	compressedSize int
+
+	detectedFields *detectedFields
+}
+
+type detectedFields struct {
+	lock           sync.Mutex
+	detectedFields map[string]map[string]struct{}
+}
+
+func (d *detectedFields) ParseLine(line string) {
+	logFmtParser := log.NewLogfmtParser(true, false)
+	jsonParser := log.NewJSONParser()
+
+	lbls := log.NewBaseLabelsBuilder().ForLabels(labels.EmptyLabels(), 0)
+	_, logfmtSuccess := logFmtParser.Process(0, []byte(line), lbls)
+	if !logfmtSuccess || lbls.HasErr() {
+		lbls.Reset()
+		_, jsonSuccess := jsonParser.Process(0, []byte(line), lbls)
+		if !jsonSuccess || lbls.HasErr() {
+			return
+		}
+	}
+
+	d.lock.Lock()
+	defer d.lock.Unlock()
+
+	newLbls := lbls.LabelsResult().Labels()
+	for _, newLbl := range newLbls {
+		if values, ok := d.detectedFields[newLbl.Name]; ok {
+			values[newLbl.Value] = struct{}{}
+		} else {
+			d.detectedFields[newLbl.Name] = map[string]struct{}{newLbl.Value: struct{}{}}
+		}
+	}
+}
+
+func (d *detectedFields) ToValuesByLabel() map[string][]string {
+	d.lock.Lock()
+	defer d.lock.Unlock()
+
+	if len(d.detectedFields) < 1 {
+		return map[string][]string{}
+	}
+
+	valsByLbl := make(map[string][]string)
+	for label, values := range d.detectedFields {
+		vals := make([]string, len(values))
+		for value, _ := range values {
+			vals = append(vals, value)
+		}
+		valsByLbl[label] = vals
+	}
+
+	return valsByLbl
+}
+
+func (d *detectedFields) Reset() {
+	d.lock.Lock()
+	defer d.lock.Unlock()
+
+	d.detectedFields = make(map[string]map[string]struct{})
 }
 
 type block struct {
@@ -148,6 +210,8 @@ type block struct {
 
 	offset           int // The offset of the block in the chunk.
 	uncompressedSize int // Total uncompressed size in bytes when the chunk is cut.
+
+	detectedFields map[string][]string
 }
 
 // This block holds the un-compressed entries. Once it has enough data, this is
@@ -850,6 +914,8 @@ func (c *MemChunk) Append(entry *logproto.Entry) error {
 		return err
 	}
 
+	c.detectedFields.ParseLine(entry.Line)
+
 	if c.head.UncompressedSize() >= c.blockSize {
 		return c.cut()
 	}
@@ -924,11 +990,13 @@ func (c *MemChunk) cut() error {
 		mint:             mint,
 		maxt:             maxt,
 		uncompressedSize: c.head.UncompressedSize(),
+		detectedFields:   c.detectedFields.ToValuesByLabel(),
 	})
 
 	c.cutBlockSize += len(b)
 
 	c.head.Reset()
+	c.detectedFields.Reset()
 	return nil
 }
 
@@ -1097,6 +1165,15 @@ func (c *MemChunk) Blocks(mintT, maxtT time.Time) []Block {
 	return blocks
 }
 
+// TODO: implement getting all detected fields from each block
+func (c *MemChunk) DetectedFields() []map[string][]string {
+	result := make([]map[string][]string, len(c.blocks))
+	for _, b := range c.blocks {
+		result = append(result, b.detectedFields)
+	}
+	return result
+}
+
 // Rebound builds a smaller chunk with logs having timestamp from start and end(both inclusive)
 func (c *MemChunk) Rebound(start, end time.Time, filter filter.Func) (Chunk, error) {
 	// add a millisecond to end time because the Chunk.Iterator considers end time to be non-inclusive.
@@ -1186,8 +1263,8 @@ func (hb *headBlock) Iterator(ctx context.Context, direction logproto.Direction,
 
 	stats := stats.FromContext(ctx)
 
-	// We are doing a copy everytime, this is because b.entries could change completely,
-	// the alternate would be that we allocate a new b.entries everytime we cut a block,
+	// We are doing a copy every time, this is because b.entries could change completely,
+	// the alternate would be that we allocate a new b.entries every time we cut a block,
 	// but the tradeoff is that queries to near-realtime data would be much lower than
 	// cutting of blocks.
 	stats.AddHeadChunkLines(int64(len(hb.entries)))

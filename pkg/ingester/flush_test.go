@@ -259,6 +259,57 @@ func TestFlushLoopCanExitDuringInitialWait(t *testing.T) {
 	require.True(t, duration < 5*time.Second, "ingester could not shut down while waiting for initial delay")
 }
 
+func TestFlushingDetectedFields(t *testing.T) {
+	cfg := defaultIngesterTestConfig(t)
+	cfg.FlushCheckPeriod = time.Millisecond * 100
+	cfg.MaxChunkAge = time.Minute
+	cfg.MaxChunkIdle = time.Hour
+
+	store, ing := newTestStore(t, cfg, nil)
+	defer store.Stop()
+
+	now := time.Unix(0, 0)
+
+	firstEntries := []logproto.Entry{
+		{Timestamp: now.Add(time.Nanosecond), Line: "foo=bar"},
+		{Timestamp: now.Add(time.Minute), Line: "label=value"},
+	}
+
+	secondEntries := []logproto.Entry{
+		{Timestamp: now.Add(time.Second * 61), Line: "foo=baz"},
+	}
+
+	req := &logproto.PushRequest{Streams: []logproto.Stream{
+		{Labels: model.LabelSet{"app": "l"}.String(), Entries: firstEntries},
+	}}
+
+	const userID = "testUser"
+	ctx := user.InjectOrgID(context.Background(), userID)
+
+	_, err := ing.Push(ctx, req)
+	require.NoError(t, err)
+
+	time.Sleep(2 * cfg.FlushCheckPeriod)
+
+	req2 := &logproto.PushRequest{Streams: []logproto.Stream{
+		{Labels: model.LabelSet{"app": "l"}.String(), Entries: secondEntries},
+	}}
+
+	_, err = ing.Push(ctx, req2)
+	require.NoError(t, err)
+
+	time.Sleep(2 * cfg.FlushCheckPeriod)
+
+	// assert stream is now both batches
+	store.checkData(t, map[string][]logproto.Stream{
+		userID: {
+			{Labels: model.LabelSet{"app": "l"}.String(), Entries: append(firstEntries, secondEntries...)},
+		},
+	})
+
+	require.NoError(t, services.StopAndAwaitTerminated(context.Background(), ing))
+}
+
 type testStore struct {
 	mtx sync.Mutex
 	// Chunks keyed by userID.

@@ -80,6 +80,8 @@ func (m *Multi) Delete(labels labels.Labels, fp model.Fingerprint) {
 
 }
 
+//NOTE(twhitney): this is just picking the correct schema config from the period configs
+//after that time doesn't really seem to matter.
 func (m *Multi) Lookup(t time.Time, matchers []*labels.Matcher, shard *astmapper.ShardAnnotation) ([]model.Fingerprint, error) {
 	return m.indexFor(t).Lookup(matchers, shard)
 }

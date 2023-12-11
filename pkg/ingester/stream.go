@@ -49,6 +49,10 @@ type stream struct {
 	labelHash        uint64
 	labelHashNoShard uint64
 
+	//TODO(twhitney): how are all of these used
+	detectedLabels map[string]map[string]struct{}
+  detectedLabelsMtx sync.RWMutex
+
 	// most recently pushed line. This is used to prevent duplicate pushes.
 	// It also determines chunk synchronization when unordered writes are disabled.
 	lastLine line
@@ -125,6 +129,8 @@ func newStream(
 		writeFailures:        writeFailures,
 		chunkFormat:          chunkFormat,
 		chunkHeadBlockFormat: headBlockFmt,
+
+		detectedLabels: make(map[string]map[string]struct{}),
 	}
 }
 
@@ -351,7 +357,34 @@ func (s *stream) storeEntries(ctx context.Context, entries []logproto.Entry) (in
 
 		bytesAdded += len(entries[i].Line)
 		storedEntries = append(storedEntries, entries[i])
+
+		//TODO(twhitney): parse the entry here and store the key/value pairs somewhere on the stream
+		logFmtParser := log.NewLogfmtParser(true, false)
+		jsonParser := log.NewJSONParser()
+
+		lbls := log.NewBaseLabelsBuilder().ForLabels(labels.EmptyLabels(), 0)
+		_, logfmtSuccess := logFmtParser.Process(0, []byte(entries[i].Line), lbls)
+		if !logfmtSuccess || lbls.HasErr() {
+      lbls.Reset()
+			_, jsonSuccess := jsonParser.Process(0, []byte(entries[i].Line), lbls)
+			if !jsonSuccess || lbls.HasErr() {
+				continue
+			}
+		}
+
+		newLbls := lbls.LabelsResult().Labels()
+		for _, newLbl := range newLbls {
+			if values, ok := s.detectedLabels[newLbl.Name]; ok {
+				values[newLbl.Value] = struct{}{}
+			} else {
+				s.detectedLabels[newLbl.Name] = map[string]struct{}{newLbl.Value: struct{}{}}
+			}
+		}
+
+    //TODO(twhitney): remove me
+		fmt.Printf("detectedLabels: %v\n", s.detectedLabels)
 	}
+
 	s.reportMetrics(outOfOrderSamples, outOfOrderBytes, 0, 0)
 	return bytesAdded, storedEntries, invalid
 }

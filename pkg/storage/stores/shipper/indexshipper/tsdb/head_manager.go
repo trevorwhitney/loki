@@ -144,6 +144,7 @@ func NewHeadManager(name string, logger log.Logger, dir string, metrics *Metrics
 	return m
 }
 
+//TODO(twhitney): need to tap into this loop for shipping detected fields
 func (m *HeadManager) loop() {
 	defer m.wg.Done()
 

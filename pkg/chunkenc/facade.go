@@ -128,3 +128,96 @@ func UncompressedSize(c chunk.Data) (int, bool) {
 
 	return f.c.UncompressedSize(), true
 }
+
+
+// Facade for compatibility with cortex chunk type, so we can use its chunk store.
+type DetectedFieldsFacade struct {
+	c          Chunk
+	blockSize  int
+	targetSize int
+	chunk.Data
+}
+
+// NewFacade makes a new DetectedFieldsFacade.
+func NewDetectedFieldsFacade(c Chunk, blockSize, targetSize int) chunk.Data {
+	return &DetectedFieldsFacade{
+		c:          c,
+		blockSize:  blockSize,
+		targetSize: targetSize,
+	}
+}
+
+func (f DetectedFieldsFacade) Bounds() (time.Time, time.Time) {
+	return f.c.Bounds()
+}
+
+// Marshal implements chunk.Chunk.
+func (f DetectedFieldsFacade) Marshal(w io.Writer) error {
+	if f.c == nil {
+		return nil
+	}
+	if _, err := f.c.WriteTo(w); err != nil {
+		return err
+	}
+	return nil
+}
+
+// UnmarshalFromBuf implements chunk.Chunk.
+func (f *DetectedFieldsFacade) UnmarshalFromBuf(buf []byte) error {
+	var err error
+	f.c, err = NewByteChunk(buf, f.blockSize, f.targetSize)
+	return err
+}
+
+// Encoding implements chunk.Chunk.
+func (DetectedFieldsFacade) Encoding() chunk.Encoding {
+	return LogChunk
+}
+
+// Utilization implements encoding.Chunk.
+func (f DetectedFieldsFacade) Utilization() float64 {
+	if f.c == nil {
+		return 0
+	}
+	return f.c.Utilization()
+}
+
+// Size implements encoding.Chunk, which unfortunately uses
+// the Size method to refer to the byte size and not the entry count
+// like chunkenc.Chunk does.
+func (f DetectedFieldsFacade) Size() int {
+	if f.c == nil {
+		return 0
+	}
+	// Note this is an estimation (which is OK)
+	return f.c.CompressedSize()
+}
+
+func (f DetectedFieldsFacade) UncompressedSize() int {
+	if f.c == nil {
+		return 0
+	}
+	return f.c.UncompressedSize()
+}
+
+func (f DetectedFieldsFacade) Entries() int {
+	if f.c == nil {
+		return 0
+	}
+	return f.c.Size()
+}
+
+// LokiChunk returns the chunkenc.Chunk.
+func (f DetectedFieldsFacade) LokiChunk() Chunk {
+	return f.c
+}
+
+func (f DetectedFieldsFacade) Rebound(start, end model.Time, filter filter.Func) (chunk.Data, error) {
+	newChunk, err := f.c.Rebound(start.Time(), end.Time(), filter)
+	if err != nil {
+		return nil, err
+	}
+	return &DetectedFieldsFacade{
+		c: newChunk,
+	}, nil
+}
