@@ -419,6 +419,7 @@ func TestChunkEncodingRoundTrip(t *testing.T) {
 	for _, version := range []int{
 		FormatV2,
 		FormatV3,
+		FormatV4,
 	} {
 		for _, nChks := range []int{
 			0,
@@ -592,7 +593,7 @@ func TestSearchWithPageMarkers(t *testing.T) {
 				decbuf := encoding.DecWrap(tsdb_enc.Decbuf{B: primary.Get()})
 				dec := newDecoder(nil, 0)
 				dst := []ChunkMeta{}
-				require.Nil(t, dec.readChunksV3(&decbuf, tc.mint, tc.maxt, &dst))
+				require.Nil(t, dec.readChunksV3(&decbuf, tc.mint, tc.maxt, &dst, FormatV3))
 				require.Equal(t, tc.exp, dst)
 			})
 		}

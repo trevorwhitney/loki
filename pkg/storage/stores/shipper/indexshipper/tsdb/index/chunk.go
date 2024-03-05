@@ -9,6 +9,22 @@ import (
 	"github.com/grafana/loki/pkg/util/encoding"
 )
 
+type DetectedFields map[string]uint64
+
+func (d *DetectedFields) Equals(other DetectedFields) bool {
+	if len(*d) != len(other) {
+		return false
+	}
+
+	for k, v := range *d {
+		if other[k] != v {
+			return false
+		}
+	}
+
+	return true
+}
+
 // Meta holds information about a chunk of data.
 type ChunkMeta struct {
 	Checksum uint32
@@ -19,11 +35,25 @@ type ChunkMeta struct {
 	KB uint32
 
 	Entries uint32
+
+	DetectedFields DetectedFields
 }
 
 func (c ChunkMeta) From() model.Time                 { return model.Time(c.MinTime) }
 func (c ChunkMeta) Through() model.Time              { return model.Time(c.MaxTime) }
 func (c ChunkMeta) Bounds() (model.Time, model.Time) { return c.From(), c.Through() }
+func (c ChunkMeta) Equals(other ChunkMeta) bool {
+	if c.Checksum != other.Checksum ||
+		c.MinTime != other.MinTime ||
+		c.MaxTime != other.MaxTime ||
+		c.KB != other.KB ||
+		c.Entries != other.Entries ||
+		!c.DetectedFields.Equals(other.DetectedFields) {
+		return false
+	}
+
+	return true
+}
 
 type ChunkMetas []ChunkMeta
 
@@ -151,7 +181,7 @@ func (c ChunkMetas) Drop(chk ChunkMeta) (ChunkMetas, bool) {
 		return ichk.Checksum >= chk.Checksum
 	})
 
-	if j >= len(c) || c[j] != chk {
+	if j >= len(c) || !c[j].Equals(chk) {
 		return c, false
 	}
 

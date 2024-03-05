@@ -211,7 +211,7 @@ func TestIndexRW_Postings(t *testing.T) {
 			return errors.Errorf("unexpected number of label indices table names %d", nc)
 		}
 		for i := d.Be32(); i > 0; i-- {
-			v, err := ir.lookupSymbol(d.Be32())
+			v, err := ir.lookupSymbol(d.Be32(), lookupNameSymbol)
 			if err != nil {
 				return err
 			}
@@ -788,7 +788,7 @@ func TestDecoder_ChunkSamples(t *testing.T) {
 				dw := encoding.DecWrap(tsdb_enc.Decbuf{B: d.Get()})
 				dw.Skip(cs.offset)
 				chunkMeta := ChunkMeta{}
-				require.NoError(t, readChunkMeta(&dw, cs.prevChunkMaxt, &chunkMeta))
+				require.NoError(t, readChunkMeta(ir.dec, &dw, cs.prevChunkMaxt, &chunkMeta, FormatV2))
 				require.Equal(t, tc.chunkMetas[tc.expectedChunkSamples[i].idx], chunkMeta)
 			}
 
@@ -939,4 +939,101 @@ func TestChunkSamples_getChunkSampleForQueryStarting(t *testing.T) {
 			require.Equal(t, tc.chunkSamples.chunks[tc.expectedChunkSampleIdx], *chunkSample)
 		})
 	}
+}
+
+func Test_DetectedFields(t *testing.T) {
+	dir := t.TempDir()
+
+	lbls := []labels.Labels{
+		{{Name: "fizz", Value: "buzz"}},
+		{{Name: "ping", Value: "pong"}},
+	}
+
+	symbols := map[string]struct{}{}
+	for _, lset := range lbls {
+		for _, l := range lset {
+			symbols[l.Name] = struct{}{}
+			symbols[l.Value] = struct{}{}
+		}
+	}
+
+	detectedFields := []string{
+		"bar", "baz", "foo",
+	}
+
+	now := model.Now()
+
+	t.Run("it stores the detected field counts", func(t *testing.T) {
+		indexFile := filepath.Join(dir, "detected_fields")
+		iw, err := NewWriterWithVersion(context.Background(), FormatV4, indexFile)
+		require.NoError(t, err)
+
+		syms := []string{}
+		for s := range symbols {
+			syms = append(syms, s)
+		}
+		sort.Strings(syms)
+		for _, s := range syms {
+			require.NoError(t, iw.AddSymbol(s))
+		}
+
+		sort.Strings(detectedFields)
+		for _, df := range detectedFields {
+			require.NoError(t, iw.AddDetectedFieldSymbol(df))
+		}
+
+		chunkMetas := []ChunkMeta{
+			{
+				MinTime: int64(now),
+				MaxTime: int64(now.Add(30 * time.Minute)),
+				DetectedFields: map[string]uint64{
+					"foo": 27,
+					"bar": 3,
+					"baz": 7,
+				},
+			},
+		}
+
+		for i, l := range lbls {
+			err = iw.AddSeries(storage.SeriesRef(i), l, model.Fingerprint(l.Hash()), chunkMetas...)
+			require.NoError(t, err)
+		}
+
+		err = iw.Close()
+		require.NoError(t, err)
+
+		ir, err := NewFileReader(indexFile)
+		require.NoError(t, err, fmt.Errorf("%w", err))
+
+		postings, err := ir.Postings("fizz", nil, "buzz")
+		require.NoError(t, err)
+
+		require.True(t, postings.Next())
+		var lset labels.Labels
+		var chks []ChunkMeta
+
+		// read series so that chunk samples get built
+		_, err = ir.Series(postings.At(), 0, math.MaxInt64, &lset, &chks)
+		require.NoError(t, err)
+
+		require.Equal(t, chunkMetas, chks)
+		require.Equal(t, lset, lbls[0])
+
+		// build decoder for the series we read to verify the samples
+		offset := postings.At() * 16
+		d := encoding.DecWrap(tsdb_enc.NewDecbufUvarintAt(ir.b, int(offset), castagnoliTable))
+		require.NoError(t, d.Err())
+
+		// read chunk metadata to positing the decoder at the beginning of first chunk
+		d.Be64()
+		k := d.Uvarint()
+
+		for i := 0; i < k; i++ {
+			d.Uvarint()
+			d.Uvarint()
+		}
+		require.Equal(t, len(chunkMetas), d.Uvarint())
+
+		require.NoError(t, ir.Close())
+	})
 }

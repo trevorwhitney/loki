@@ -138,10 +138,17 @@ func (b *Builder) Build(
 
 	// Build symbols
 	symbolsMap := make(map[string]struct{})
+	detectedFieldSet := map[string]struct{}{}
 	for _, s := range streams {
 		for _, l := range s.labels {
 			symbolsMap[l.Name] = struct{}{}
 			symbolsMap[l.Value] = struct{}{}
+		}
+
+		for _, chk := range s.chunks {
+			for df, _ := range chk.DetectedFields {
+				detectedFieldSet[df] = struct{}{}
+			}
 		}
 	}
 
@@ -155,6 +162,13 @@ func (b *Builder) Build(
 	// Add symbols
 	for _, symbol := range symbols {
 		if err := writer.AddSymbol(symbol); err != nil {
+			return id, err
+		}
+	}
+
+  // Add detected fields
+	for df, _ := range detectedFieldSet {
+		if err := writer.AddDetectedFieldSymbol(df); err != nil {
 			return id, err
 		}
 	}
