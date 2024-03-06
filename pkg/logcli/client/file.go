@@ -145,7 +145,7 @@ func (f *FileClient) QueryRange(queryStr string, limit int, start, end time.Time
 	}, nil
 }
 
-func (f *FileClient) ListLabelNames(_ bool, _, _ time.Time) (*loghttp.LabelResponse, error) {
+func (f *FileClient) ListLabelNames(_ bool, _, _ time.Time, _ string) (*loghttp.LabelResponse, error) {
 	return &loghttp.LabelResponse{
 		Status: loghttp.QueryStatusSuccess,
 		Data:   f.labels,

@@ -452,7 +452,7 @@ func (t *testQueryClient) QueryRange(queryStr string, limit int, from, through t
 	return q, nil
 }
 
-func (t *testQueryClient) ListLabelNames(_ bool, _, _ time.Time) (*loghttp.LabelResponse, error) {
+func (t *testQueryClient) ListLabelNames(_ bool, _, _ time.Time, _ string) (*loghttp.LabelResponse, error) {
 	panic("implement me")
 }
 

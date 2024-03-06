@@ -152,7 +152,7 @@ func TestFileClient_Query(t *testing.T) {
 
 func TestFileClient_ListLabelNames(t *testing.T) {
 	c := newEmptyClient(t)
-	values, err := c.ListLabelNames(true, time.Now(), time.Now())
+	values, err := c.ListLabelNames(true, time.Now(), time.Now(), "")
 	require.NoError(t, err)
 	assert.Equal(t, &loghttp.LabelResponse{
 		Data:   []string{defaultLabelKey},

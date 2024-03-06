@@ -46,7 +46,7 @@ var userAgent = fmt.Sprintf("loki-logcli/%s", build.Version)
 type Client interface {
 	Query(queryStr string, limit int, time time.Time, direction logproto.Direction, quiet bool) (*loghttp.QueryResponse, error)
 	QueryRange(queryStr string, limit int, start, end time.Time, direction logproto.Direction, step, interval time.Duration, quiet bool) (*loghttp.QueryResponse, error)
-	ListLabelNames(quiet bool, start, end time.Time) (*loghttp.LabelResponse, error)
+	ListLabelNames(quiet bool, start, end time.Time, query string) (*loghttp.LabelResponse, error)
 	ListLabelValues(name string, quiet bool, start, end time.Time) (*loghttp.LabelResponse, error)
 	Series(matchers []string, start, end time.Time, quiet bool) (*loghttp.SeriesResponse, error)
 	LiveTailQueryConn(queryStr string, delayFor time.Duration, limit int, start time.Time, quiet bool) (*websocket.Conn, error)
@@ -118,11 +118,12 @@ func (c *DefaultClient) QueryRange(queryStr string, limit int, start, end time.T
 }
 
 // ListLabelNames uses the /api/v1/label endpoint to list label names
-func (c *DefaultClient) ListLabelNames(quiet bool, start, end time.Time) (*loghttp.LabelResponse, error) {
+func (c *DefaultClient) ListLabelNames(quiet bool, start, end time.Time, query string) (*loghttp.LabelResponse, error) {
 	var labelResponse loghttp.LabelResponse
 	params := util.NewQueryStringBuilder()
 	params.SetInt("start", start.UnixNano())
 	params.SetInt("end", end.UnixNano())
+	params.SetStringArray("query", []string{query})
 
 	if err := c.doRequest(labelsPath, params.Encode(), quiet, &labelResponse); err != nil {
 		return nil, err

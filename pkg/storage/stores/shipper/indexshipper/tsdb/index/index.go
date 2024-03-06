@@ -1928,6 +1928,12 @@ func (r *Reader) LabelNamesFor(ids ...storage.SeriesRef) ([]string, error) {
 		names = append(names, name)
 	}
 
+	// all fields are possible labels for this chunk
+	fieldIter := r.detectedFieldSymbols.Iter()
+	for fieldIter.Next() {
+		names = append(names, fieldIter.At())
+	}
+
 	sort.Strings(names)
 
 	return names, nil
@@ -2262,7 +2268,7 @@ func (dec *Decoder) LabelValueFor(b []byte, label string) (string, error) {
 		}
 
 		if ln == label {
-			lv, err := dec.LookupSymbol(lvo, lookupFieldSymbol)
+			lv, err := dec.LookupSymbol(lvo, lookupNameSymbol)
 			if err != nil {
 				return "", errors.Wrap(err, "lookup label value")
 			}

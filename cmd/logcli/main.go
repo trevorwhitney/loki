@@ -451,7 +451,7 @@ func newQueryClient(app *kingpin.Application) client.Client {
 }
 
 func newLabelQuery(cmd *kingpin.CmdClause) *labelquery.LabelQuery {
-	var labelName, from, to string
+	var labelName, from, to, query string
 	var since time.Duration
 
 	q := &labelquery.LabelQuery{}
@@ -465,6 +465,7 @@ func newLabelQuery(cmd *kingpin.CmdClause) *labelquery.LabelQuery {
 		q.Start = mustParse(from, defaultStart)
 		q.End = mustParse(to, defaultEnd)
 		q.LabelName = labelName
+		q.Query = query
 		q.Quiet = *quiet
 		return nil
 	})
@@ -473,6 +474,7 @@ func newLabelQuery(cmd *kingpin.CmdClause) *labelquery.LabelQuery {
 	cmd.Flag("since", "Lookback window.").Default("1h").DurationVar(&since)
 	cmd.Flag("from", "Start looking for labels at this absolute time (inclusive)").StringVar(&from)
 	cmd.Flag("to", "Stop looking for labels at this absolute time (exclusive)").StringVar(&to)
+	cmd.Flag("query", "Only return label names for streams that match the given query").StringVar(&query)
 
 	return q
 }
