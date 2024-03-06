@@ -456,7 +456,7 @@ func (t *testQueryClient) ListLabelNames(_ bool, _, _ time.Time, _ string) (*log
 	panic("implement me")
 }
 
-func (t *testQueryClient) ListLabelValues(_ string, _ bool, _, _ time.Time) (*loghttp.LabelResponse, error) {
+func (t *testQueryClient) ListLabelValues(_ string, _ bool, _, _ time.Time, _ string) (*loghttp.LabelResponse, error) {
 	panic("implement me")
 }
 

@@ -14,7 +14,9 @@
 package tsdb
 
 import (
+	"math"
 	"sort"
+	"strconv"
 	"strings"
 	"unicode/utf8"
 
@@ -50,12 +52,13 @@ type IndexReader interface {
 	// series' labels and indices. It is not safe to use the returned strings
 	// beyond the lifetime of the index reader.
 	Symbols() index.StringIter
+	DetectedFieldSymbols() index.StringIter
 
 	// SortedLabelValues returns sorted possible label values.
-	SortedLabelValues(name string, matchers ...*labels.Matcher) ([]string, error)
+	SortedLabelValues(name string, from, through int64, matchers ...*labels.Matcher) ([]string, error)
 
 	// LabelValues returns possible label values which may not be sorted.
-	LabelValues(name string, matchers ...*labels.Matcher) ([]string, error)
+	LabelValues(name string, from, through int64, matchers ...*labels.Matcher) ([]string, error)
 
 	// Postings returns the postings list iterator for the label pairs.
 	// The Postings here contain the offsets to the series inside the index.
@@ -188,7 +191,7 @@ func postingsForMatcher(ix IndexReader, fpFilter index.FingerprintFilter, m *lab
 		}
 	}
 
-	vals, err := ix.LabelValues(m.Name)
+	vals, err := ix.LabelValues(m.Name, 0, math.MaxInt64)
 	if err != nil {
 		return nil, err
 	}
@@ -217,7 +220,7 @@ func postingsForMatcher(ix IndexReader, fpFilter index.FingerprintFilter, m *lab
 
 // inversePostingsForMatcher returns the postings for the series with the label name set but not matching the matcher.
 func inversePostingsForMatcher(ix IndexReader, fpFilter index.FingerprintFilter, m *labels.Matcher) (index.Postings, error) {
-	vals, err := ix.LabelValues(m.Name)
+	vals, err := ix.LabelValues(m.Name, 0, math.MaxInt64)
 	if err != nil {
 		return nil, err
 	}
@@ -282,7 +285,7 @@ func findSetMatches(pattern string) []string {
 	return matches
 }
 
-func labelValuesWithMatchers(r IndexReader, name string, matchers ...*labels.Matcher) ([]string, error) {
+func labelValuesWithMatchers(r IndexReader, name string, from, through int64, matchers ...*labels.Matcher) ([]string, error) {
 	// We're only interested in metrics which have the label <name>.
 	requireLabel, err := labels.NewMatcher(labels.MatchNotEqual, name, "")
 	if err != nil {
@@ -290,22 +293,48 @@ func labelValuesWithMatchers(r IndexReader, name string, matchers ...*labels.Mat
 	}
 
 	var p index.Postings
-	p, err = PostingsForMatchers(r, nil, append(matchers, requireLabel)...)
+	detectedFieldsIter := r.DetectedFieldSymbols()
+	shouldRequireLabel := true
+	for detectedFieldsIter.Next() {
+		if detectedFieldsIter.At() == name {
+			shouldRequireLabel = false
+			break
+		}
+	}
+
+	if shouldRequireLabel {
+		matchers = append(matchers, requireLabel)
+	}
+
+	p, err = PostingsForMatchers(r, nil, matchers...)
 	if err != nil {
 		return nil, err
 	}
 
 	dedupe := map[string]interface{}{}
 	for p.Next() {
-		v, err := r.LabelValueFor(p.At(), name)
+		var ls labels.Labels
+		//TODO: need to pool these
+		var chks []index.ChunkMeta
+		_, err := r.Series(p.At(), from, through, &ls, &chks)
 		if err != nil {
-			if err == storage.ErrNotFound {
-				continue
-			}
-
 			return nil, err
 		}
-		dedupe[v] = nil
+
+		for _, l := range ls {
+			if l.Name == name {
+				dedupe[l.Value] = nil
+			}
+		}
+
+		for _, chk := range chks {
+			for f, c := range chk.DetectedFields {
+				if f == name {
+          //TODO: this should actually be the highest value?
+					dedupe[strconv.FormatUint(c, 10)] = nil
+				}
+			}
+		}
 	}
 
 	if err = p.Err(); err != nil {

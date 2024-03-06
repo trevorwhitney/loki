@@ -32,7 +32,7 @@ func (q *LabelQuery) ListLabels(c client.Client) []string {
 	var labelResponse *loghttp.LabelResponse
 	var err error
 	if len(q.LabelName) > 0 {
-		labelResponse, err = c.ListLabelValues(q.LabelName, q.Quiet, q.Start, q.End)
+		labelResponse, err = c.ListLabelValues(q.LabelName, q.Quiet, q.Start, q.End, q.Query)
 	} else {
 		labelResponse, err = c.ListLabelNames(q.Quiet, q.Start, q.End, q.Query)
 	}

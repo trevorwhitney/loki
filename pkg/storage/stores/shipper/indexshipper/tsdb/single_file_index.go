@@ -261,11 +261,12 @@ func (i *TSDBIndex) LabelNames(_ context.Context, _ string, _, _ model.Time, mat
 	return labelNamesWithMatchers(i.reader, matchers...)
 }
 
-func (i *TSDBIndex) LabelValues(_ context.Context, _ string, _, _ model.Time, name string, matchers ...*labels.Matcher) ([]string, error) {
+func (i *TSDBIndex) LabelValues(_ context.Context, _ string, from, through model.Time, name string, matchers ...*labels.Matcher) ([]string, error) {
 	if len(matchers) == 0 {
-		return i.reader.LabelValues(name)
+		return i.reader.LabelValues(name, int64(from), int64(through))
 	}
-	return labelValuesWithMatchers(i.reader, name, matchers...)
+
+	return labelValuesWithMatchers(i.reader, name, int64(from), int64(through), matchers...)
 }
 
 func (i *TSDBIndex) Checksum() uint32 {

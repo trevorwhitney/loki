@@ -152,7 +152,7 @@ func (f *FileClient) ListLabelNames(_ bool, _, _ time.Time, _ string) (*loghttp.
 	}, nil
 }
 
-func (f *FileClient) ListLabelValues(name string, _ bool, _, _ time.Time) (*loghttp.LabelResponse, error) {
+func (f *FileClient) ListLabelValues(name string, _ bool, _, _ time.Time, _ string) (*loghttp.LabelResponse, error) {
 	i := sort.SearchStrings(f.labels, name)
 	if i < 0 {
 		return &loghttp.LabelResponse{}, nil

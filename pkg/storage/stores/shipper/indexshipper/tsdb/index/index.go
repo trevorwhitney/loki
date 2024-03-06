@@ -1819,14 +1819,18 @@ func (r *Reader) Symbols() StringIter {
 	return r.symbols.Iter()
 }
 
+func (r *Reader) DetectedFieldSymbols() StringIter {
+  return r.detectedFieldSymbols.Iter()
+}
+
 // SymbolTableSize returns the symbol table size in bytes.
 func (r *Reader) SymbolTableSize() uint64 {
 	return uint64(r.symbols.Size())
 }
 
 // SortedLabelValues returns value tuples that exist for the given label name.
-func (r *Reader) SortedLabelValues(name string, matchers ...*labels.Matcher) ([]string, error) {
-	values, err := r.LabelValues(name, matchers...)
+func (r *Reader) SortedLabelValues(name string, from, through int64, matchers ...*labels.Matcher) ([]string, error) {
+	values, err := r.LabelValues(name, from, through, matchers...)
 	if err == nil && r.version == FormatV1 {
 		sort.Strings(values)
 	}
@@ -1835,7 +1839,7 @@ func (r *Reader) SortedLabelValues(name string, matchers ...*labels.Matcher) ([]
 
 // LabelValues returns value tuples that exist for the given label name.
 // TODO(replay): Support filtering by matchers
-func (r *Reader) LabelValues(name string, matchers ...*labels.Matcher) ([]string, error) {
+func (r *Reader) LabelValues(name string, _, _ int64, matchers ...*labels.Matcher) ([]string, error) {
 	if len(matchers) > 0 {
 		return nil, errors.Errorf("matchers parameter is not implemented: %+v", matchers)
 	}
