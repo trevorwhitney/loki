@@ -12,6 +12,7 @@ import (
 	"time"
 	"unsafe"
 
+	"github.com/axiomhq/hyperloglog"
 	"github.com/cespare/xxhash/v2"
 	"github.com/go-kit/log/level"
 	"github.com/pkg/errors"
@@ -32,6 +33,7 @@ const (
 	ChunkFormatV2
 	ChunkFormatV3
 	ChunkFormatV4
+	ChunkFormatV5
 
 	blocksPerChunk = 10
 	maxLineLength  = 1024 * 1024 * 1024
@@ -82,6 +84,7 @@ const (
 	OrderedHeadBlockFmt
 	UnorderedHeadBlockFmt
 	UnorderedWithStructuredMetadataHeadBlockFmt
+	UnorderedWithStructuredMetadataAndDetectedFieldsHeadBlockFmt
 )
 
 // ChunkHeadFormatFor returns corresponding head block format for the given `chunkfmt`.
@@ -94,8 +97,12 @@ func ChunkHeadFormatFor(chunkfmt byte) HeadBlockFmt {
 		return UnorderedHeadBlockFmt
 	}
 
-	// return the latest head format for all chunkformat >v3
-	return UnorderedWithStructuredMetadataHeadBlockFmt
+	if chunkfmt == ChunkFormatV4 {
+		return UnorderedWithStructuredMetadataHeadBlockFmt
+	}
+
+	// return the latest head format for all chunkformat >v4
+	return UnorderedWithStructuredMetadataAndDetectedFieldsHeadBlockFmt
 }
 
 var magicNumber = uint32(0x12EE56A)
@@ -137,8 +144,11 @@ type MemChunk struct {
 
 	// compressed size of chunk. Set when chunk is cut or while decoding chunk from storage.
 	compressedSize int
+
+	detectedFields map[string]*hyperloglog.Sketch
 }
 
+// TODO: need a compressed detected fields?
 type block struct {
 	// This is compressed bytes.
 	b          []byte
@@ -158,6 +168,8 @@ type headBlock struct {
 	size    int // size of uncompressed bytes.
 
 	mint, maxt int64
+
+	detectedFields map[string]*hyperloglog.Sketch
 }
 
 func (hb *headBlock) Format() HeadBlockFmt { return OrderedHeadBlockFmt }
@@ -167,6 +179,8 @@ func (hb *headBlock) IsEmpty() bool {
 }
 
 func (hb *headBlock) Entries() int { return len(hb.entries) }
+
+func (hb *headBlock) DetectedFields() map[string]*hyperloglog.Sketch { return hb.detectedFields }
 
 func (hb *headBlock) UncompressedSize() int { return hb.size }
 
@@ -193,7 +207,53 @@ func (hb *headBlock) Append(ts int64, line string, _ labels.Labels) error {
 	hb.maxt = ts
 	hb.size += len(line)
 
+	fields := parseLine(line)
+	for k, vals := range fields {
+		if _, ok := hb.detectedFields[k]; !ok {
+			hb.detectedFields[k] = hyperloglog.New()
+		}
+
+		for _, v := range vals {
+			hb.detectedFields[k].Insert([]byte(v))
+		}
+	}
+
 	return nil
+}
+
+func parseLine(line string) map[string][]string {
+	logFmtParser := log.NewLogfmtParser(true, false)
+	jsonParser := log.NewJSONParser()
+
+	lbls := log.NewBaseLabelsBuilder().ForLabels(labels.EmptyLabels(), 0)
+	_, logfmtSuccess := logFmtParser.Process(0, []byte(line), lbls)
+	if !logfmtSuccess || lbls.HasErr() {
+		lbls.Reset()
+		_, jsonSuccess := jsonParser.Process(0, []byte(line), lbls)
+		if !jsonSuccess || lbls.HasErr() {
+			return map[string][]string{}
+		}
+	}
+
+	parsedLabels := map[string]map[string]struct{}{}
+	for _, lbl := range lbls.LabelsResult().Labels() {
+		if values, ok := parsedLabels[lbl.Name]; ok {
+			values[lbl.Value] = struct{}{}
+		} else {
+			parsedLabels[lbl.Name] = map[string]struct{}{lbl.Value: struct{}{}}
+		}
+	}
+
+	result := make(map[string][]string, len(parsedLabels))
+	for lbl, values := range parsedLabels {
+		vals := make([]string, 0, len(values))
+		for v := range values {
+			vals = append(vals, v)
+		}
+		result[lbl] = vals
+	}
+
+	return result
 }
 
 func (hb *headBlock) Serialise(pool WriterPool) ([]byte, error) {
@@ -268,11 +328,36 @@ func (hb *headBlock) CheckpointTo(w io.Writer) error {
 	eb.putVarint64(hb.mint)
 	eb.putVarint64(hb.maxt)
 
+	eb.putUvarint(len(hb.detectedFields))
+
 	_, err = w.Write(eb.get())
 	if err != nil {
 		return errors.Wrap(err, "write headBlock metas")
 	}
 	eb.reset()
+
+	for field, sketch := range hb.detectedFields {
+		// First 8 bytes are for size of field and encodedSketch, respectively
+		eb.putUvarint(len(field))
+
+    fmt.Printf("serializing detected field %s with sketch %+v\n", field, sketch)
+
+		encodedSketch, err := sketch.MarshalBinary()
+		if err != nil {
+			return errors.Wrap(err, "encoding detected field")
+		}
+
+		if len(encodedSketch) > binary.MaxVarintLen64 {
+			return errors.Errorf("detected field sketch too large: %d", len(encodedSketch))
+		}
+
+		eb.putUvarint(len(encodedSketch))
+		w.Write(eb.get())
+		eb.reset()
+
+		io.WriteString(w, field)
+		_, err = w.Write(encodedSketch)
+	}
 
 	for _, entry := range hb.entries {
 		eb.putVarint64(entry.t)
@@ -304,33 +389,76 @@ func (hb *headBlock) LoadBytes(b []byte) error {
 	}
 	switch version {
 	case ChunkFormatV1, ChunkFormatV2, ChunkFormatV3, ChunkFormatV4:
+		ln := db.uvarint()
+		hb.size = db.uvarint()
+		hb.mint = db.varint64()
+		hb.maxt = db.varint64()
+
+		if err := db.err(); err != nil {
+			return errors.Wrap(err, "verifying headblock metadata")
+		}
+
+		hb.entries = make([]entry, ln)
+		for i := 0; i < ln && db.err() == nil; i++ {
+			var entry entry
+			entry.t = db.varint64()
+			lineLn := db.uvarint()
+			entry.s = string(db.bytes(lineLn))
+			hb.entries[i] = entry
+		}
+
+		if err := db.err(); err != nil {
+			return errors.Wrap(err, "decoding entries")
+		}
+
+		return nil
+		//V5 adds detected fields
+	case ChunkFormatV5:
+		ln := db.uvarint()
+		hb.size = db.uvarint()
+		hb.mint = db.varint64()
+		hb.maxt = db.varint64()
+
+		if err := db.err(); err != nil {
+			return errors.Wrap(err, "verifying headblock metadata")
+		}
+
+		detectedFieldsLen := db.uvarint()
+		for i := 0; i < detectedFieldsLen && db.err() == nil; i++ {
+			fieldLen := db.uvarint()
+			sketchLen := db.uvarint()
+
+			field := string(db.bytes(fieldLen))
+			sketch := &hyperloglog.Sketch{}
+			if err := sketch.UnmarshalBinary(db.bytes(sketchLen)); err != nil {
+				return errors.Wrap(err, "decoding detected field")
+			}
+      fmt.Printf("memchunk -> loading detected field %s with sketch %+v\n", field, sketch)
+			hb.detectedFields[field] = sketch
+		}
+
+		if err := db.err(); err != nil {
+			return errors.Wrap(err, "decoding detected fields")
+		}
+
+		hb.entries = make([]entry, ln)
+		for i := 0; i < ln && db.err() == nil; i++ {
+			var entry entry
+			entry.t = db.varint64()
+			lineLn := db.uvarint()
+			entry.s = string(db.bytes(lineLn))
+			hb.entries[i] = entry
+		}
+
+		if err := db.err(); err != nil {
+			return errors.Wrap(err, "decoding entries")
+		}
+
+		return nil
 	default:
-		return errors.Errorf("incompatible headBlock version (%v), only V1,V2,V3 is currently supported", version)
+		return errors.Errorf("incompatible headBlock version (%v), only V1,V2,V3,V4,V5 is currently supported", version)
 	}
 
-	ln := db.uvarint()
-	hb.size = db.uvarint()
-	hb.mint = db.varint64()
-	hb.maxt = db.varint64()
-
-	if err := db.err(); err != nil {
-		return errors.Wrap(err, "verifying headblock metadata")
-	}
-
-	hb.entries = make([]entry, ln)
-	for i := 0; i < ln && db.err() == nil; i++ {
-		var entry entry
-		entry.t = db.varint64()
-		lineLn := db.uvarint()
-		entry.s = string(db.bytes(lineLn))
-		hb.entries[i] = entry
-	}
-
-	if err := db.err(); err != nil {
-		return errors.Wrap(err, "decoding entries")
-	}
-
-	return nil
 }
 
 func (hb *headBlock) Convert(version HeadBlockFmt, symbolizer *symbolizer) (HeadBlock, error) {
@@ -363,8 +491,10 @@ func panicIfInvalidFormat(chunkFmt byte, head HeadBlockFmt) {
 		panic("only OrderedHeadBlockFmt is supported for V2 chunks")
 	}
 	if chunkFmt == ChunkFormatV4 && head != UnorderedWithStructuredMetadataHeadBlockFmt {
-		fmt.Println("received head fmt", head.String())
 		panic("only UnorderedWithStructuredMetadataHeadBlockFmt is supported for V4 chunks")
+	}
+	if chunkFmt == ChunkFormatV5 && head != UnorderedWithStructuredMetadataAndDetectedFieldsHeadBlockFmt {
+		panic("only UnorderedWithStructuredMetadataAndDetectedFieldsHeadBlockFmt is supported for V5 chunks")
 	}
 }
 
@@ -384,6 +514,8 @@ func newMemChunkWithFormat(format byte, enc Encoding, head HeadBlockFmt, blockSi
 		encoding:   enc,
 		headFmt:    head,
 		symbolizer: symbolizer,
+
+		detectedFields: map[string]*hyperloglog.Sketch{},
 	}
 }
 
@@ -399,6 +531,8 @@ func newByteChunk(b []byte, blockSize, targetSize int, fromCheckpoint bool) (*Me
 		targetSize:     targetSize,
 		symbolizer:     newSymbolizer(),
 		compressedSize: len(b),
+
+		detectedFields: map[string]*hyperloglog.Sketch{},
 	}
 	db := decbuf{b: b}
 
@@ -414,7 +548,7 @@ func newByteChunk(b []byte, blockSize, targetSize int, fromCheckpoint bool) (*Me
 	switch version {
 	case ChunkFormatV1:
 		bc.encoding = EncGZIP
-	case ChunkFormatV2, ChunkFormatV3, ChunkFormatV4:
+	case ChunkFormatV2, ChunkFormatV3, ChunkFormatV4, ChunkFormatV5:
 		// format v2+ has a byte for block encoding.
 		enc := Encoding(db.byte())
 		if db.err() != nil {
@@ -926,6 +1060,13 @@ func (c *MemChunk) cut() error {
 		uncompressedSize: c.head.UncompressedSize(),
 	})
 
+	for k, v := range c.head.DetectedFields() {
+		if _, ok := c.detectedFields[k]; !ok {
+			c.detectedFields[k] = v
+		}
+		c.detectedFields[k].Merge(v)
+	}
+
 	c.cutBlockSize += len(b)
 
 	c.head.Reset()
@@ -1136,6 +1277,10 @@ func (c *MemChunk) Rebound(start, end time.Time, filter filter.Func) (Chunk, err
 	}
 
 	return newChunk, nil
+}
+
+func (c *MemChunk) DetectedFields() map[string]*hyperloglog.Sketch {
+	return c.detectedFields
 }
 
 // encBlock is an internal wrapper for a block, mainly to avoid binding an encoding in a block itself.

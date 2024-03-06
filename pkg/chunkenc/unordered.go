@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/Workiva/go-datastructures/rangetree"
+	"github.com/axiomhq/hyperloglog"
 	"github.com/cespare/xxhash/v2"
 	"github.com/pkg/errors"
 	"github.com/prometheus/prometheus/model/labels"
@@ -32,6 +33,7 @@ type HeadBlock interface {
 	Reset()
 	Bounds() (mint, maxt int64)
 	Entries() int
+	DetectedFields() map[string]*hyperloglog.Sketch
 	UncompressedSize() int
 	Convert(HeadBlockFmt, *symbolizer) (HeadBlock, error)
 	Append(int64, string, labels.Labels) error
@@ -62,13 +64,16 @@ type unorderedHeadBlock struct {
 	lines      int   // number of entries
 	size       int   // size of uncompressed bytes.
 	mint, maxt int64 // upper and lower bounds
+
+	detectedFields map[string]*hyperloglog.Sketch
 }
 
 func newUnorderedHeadBlock(headBlockFmt HeadBlockFmt, symbolizer *symbolizer) *unorderedHeadBlock {
 	return &unorderedHeadBlock{
-		format:     headBlockFmt,
-		symbolizer: symbolizer,
-		rt:         rangetree.New(1),
+		format:         headBlockFmt,
+		symbolizer:     symbolizer,
+		rt:             rangetree.New(1),
+		detectedFields: map[string]*hyperloglog.Sketch{},
 	}
 }
 
@@ -84,6 +89,10 @@ func (hb *unorderedHeadBlock) Bounds() (int64, int64) {
 
 func (hb *unorderedHeadBlock) Entries() int {
 	return hb.lines
+}
+
+func (hb *unorderedHeadBlock) DetectedFields() map[string]*hyperloglog.Sketch {
+	return hb.detectedFields
 }
 
 func (hb *unorderedHeadBlock) UncompressedSize() int {
@@ -143,7 +152,7 @@ func (hb *unorderedHeadBlock) Append(ts int64, line string, structuredMetadata l
 		e.entries = []nsEntry{{line, hb.symbolizer.Add(structuredMetadata)}}
 	}
 
-	// Update hb metdata
+	// Update hb metadata
 	if hb.size == 0 || hb.mint > ts {
 		hb.mint = ts
 	}
@@ -155,6 +164,17 @@ func (hb *unorderedHeadBlock) Append(ts int64, line string, structuredMetadata l
 	hb.size += len(line)
 	hb.size += len(structuredMetadata) * 2 * 4 // 4 bytes per label and value pair as structuredMetadataSymbols
 	hb.lines++
+
+	fields := parseLine(line)
+	for k, vals := range fields {
+		if _, ok := hb.detectedFields[k]; !ok {
+			hb.detectedFields[k] = hyperloglog.New()
+		}
+
+		for _, v := range vals {
+			hb.detectedFields[k].Insert([]byte(v))
+		}
+	}
 
 	return nil
 }
@@ -570,6 +590,21 @@ func (hb *unorderedHeadBlock) LoadBytes(b []byte) error {
 		line := string(db.bytes(lineLn))
 
 		var structuredMetadataSymbols symbols
+		if version >= UnorderedWithStructuredMetadataAndDetectedFieldsHeadBlockFmt.Byte() {
+			detectedFieldsLen := db.uvarint()
+			for i := 0; i < detectedFieldsLen && db.err() == nil; i++ {
+				fieldLen := db.uvarint()
+				sketchLen := db.uvarint()
+
+				field := string(db.bytes(fieldLen))
+				sketch := &hyperloglog.Sketch{}
+				if err := sketch.UnmarshalBinary(db.bytes(sketchLen)); err != nil {
+					return errors.Wrap(err, "decoding detected field")
+				}
+				hb.detectedFields[field] = sketch
+			}
+		}
+
 		if version >= UnorderedWithStructuredMetadataHeadBlockFmt.Byte() {
 			metaLn := db.uvarint()
 			if metaLn > 0 {

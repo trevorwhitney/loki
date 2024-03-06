@@ -166,8 +166,15 @@ func (b *Builder) Build(
 		}
 	}
 
-  // Add detected fields
-	for df, _ := range detectedFieldSet {
+	// Sort detected fields
+	detectedFields := make([]string, 0, len(detectedFieldSet))
+	for df := range detectedFieldSet {
+		detectedFields = append(detectedFields, df)
+	}
+	sort.Strings(detectedFields)
+
+	// Add detected fields
+	for _, df := range detectedFields {
 		if err := writer.AddDetectedFieldSymbol(df); err != nil {
 			return id, err
 		}

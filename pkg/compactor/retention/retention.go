@@ -404,6 +404,7 @@ func (c *chunkRewriter) rewriteChunk(ctx context.Context, ce ChunkEntry, tableIn
 		facade,
 		newChunkStart,
 		newChunkEnd,
+    map[string]uint64{},
 	)
 
 	err = newChunk.Encode()

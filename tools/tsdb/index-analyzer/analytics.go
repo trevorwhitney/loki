@@ -74,6 +74,10 @@ func analyze(indexShipper indexshipper.IndexShipper, tableName string, tenants [
 					model.Earliest,
 					model.Latest,
 					func(ls labels.Labels, fp model.Fingerprint, chks []tsdb_index.ChunkMeta) {
+						for _, chk := range chks {
+							fmt.Printf("series: %v, entries: %v\n", ls, chk.Entries)
+							fmt.Printf("detected fields: %v\n", chk.DetectedFields)
+						}
 						if len(chks) > maxChunksPerSeries {
 							maxChunksPerSeries = len(chks)
 							if len(chks) > 1000 {

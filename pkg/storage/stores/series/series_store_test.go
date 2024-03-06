@@ -756,6 +756,7 @@ func dummyChunkWithFormat(t testing.TB, now model.Time, metric labels.Labels, fo
 		chunkenc.NewFacade(chk, 0, 0),
 		chunkStart,
 		now,
+    map[string]uint64{},
 	)
 	// Force checksum calculation.
 	if err := chunk.Encode(); err != nil {

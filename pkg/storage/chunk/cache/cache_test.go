@@ -51,6 +51,7 @@ func fillCache(t *testing.T, scfg config.SchemaConfig, cache cache.Cache) ([]str
 			chunkenc.NewFacade(cs, 0, 0),
 			ts,
 			ts.Add(chunkLen),
+      map[string]uint64{},
 		)
 
 		err = c.Encode()

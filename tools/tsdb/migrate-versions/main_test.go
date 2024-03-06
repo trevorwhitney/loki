@@ -99,6 +99,7 @@ func TestMigrateTables(t *testing.T) {
 		require.NoError(t, os.Remove(idxPath))
 	}
 
+  //TODO: do we need to test migrating to v4? How will we handle detected fields?
 	for _, migrateToVer := range []int{index.FormatV3, index.FormatV2} {
 		t.Run(fmt.Sprintf("migrate_to_ver_%d", migrateToVer), func(t *testing.T) {
 			desiredVer = migrateToVer

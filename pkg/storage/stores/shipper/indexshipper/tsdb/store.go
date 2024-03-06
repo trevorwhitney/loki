@@ -152,19 +152,26 @@ func (s *store) Stop() {
 func (s *store) IndexChunk(_ context.Context, _ model.Time, _ model.Time, chk chunk.Chunk) error {
 	// Always write the index to benefit durability via replication factor.
 	approxKB := math.Round(float64(chk.Data.UncompressedSize()) / float64(1<<10))
+
 	metas := tsdbindex.ChunkMetas{
 		{
-			Checksum: chk.ChunkRef.Checksum,
-			MinTime:  int64(chk.ChunkRef.From),
-			MaxTime:  int64(chk.ChunkRef.Through),
-			KB:       uint32(approxKB),
-			Entries:  uint32(chk.Data.Entries()),
+			Checksum:       chk.ChunkRef.Checksum,
+			MinTime:        int64(chk.ChunkRef.From),
+			MaxTime:        int64(chk.ChunkRef.Through),
+			KB:             uint32(approxKB),
+			Entries:        uint32(chk.Data.Entries()),
+			DetectedFields: chk.DetectedFields,
 		},
 	}
 	if err := s.indexWriter.Append(chk.UserID, chk.Metric, chk.ChunkRef.Fingerprint, metas); err != nil {
 		return errors.Wrap(err, "writing index entry")
 	}
 	return nil
+}
+
+func buildDetectedFields(data chunk.Data) tsdbindex.DetectedFields {
+	detectedFields := make(tsdbindex.DetectedFields)
+	return detectedFields
 }
 
 type failingIndexWriter struct{}
