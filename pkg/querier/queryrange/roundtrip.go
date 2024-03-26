@@ -45,18 +45,20 @@ const (
 // Config is the configuration for the queryrange tripperware
 type Config struct {
 	base.Config                  `yaml:",inline"`
-	Transformer                  UserIDTransformer        `yaml:"-"`
-	CacheIndexStatsResults       bool                     `yaml:"cache_index_stats_results"`
-	StatsCacheConfig             IndexStatsCacheConfig    `yaml:"index_stats_results_cache" doc:"description=If a cache config is not specified and cache_index_stats_results is true, the config for the results cache is used."`
-	CacheVolumeResults           bool                     `yaml:"cache_volume_results"`
-	VolumeCacheConfig            VolumeCacheConfig        `yaml:"volume_results_cache" doc:"description=If a cache config is not specified and cache_volume_results is true, the config for the results cache is used."`
-	CacheInstantMetricResults    bool                     `yaml:"cache_instant_metric_results"`
-	InstantMetricCacheConfig     InstantMetricCacheConfig `yaml:"instant_metric_results_cache" doc:"description=If a cache config is not specified and cache_instant_metric_results is true, the config for the results cache is used."`
-	InstantMetricQuerySplitAlign bool                     `yaml:"instant_metric_query_split_align" doc:"description=Whether to align the splits of instant metric query with splitByInterval and query's exec time. Useful when instant_metric_cache is enabled"`
-	CacheSeriesResults           bool                     `yaml:"cache_series_results"`
-	SeriesCacheConfig            SeriesCacheConfig        `yaml:"series_results_cache" doc:"description=If series_results_cache is not configured and cache_series_results is true, the config for the results cache is used."`
-	CacheLabelResults            bool                     `yaml:"cache_label_results"`
-	LabelsCacheConfig            LabelsCacheConfig        `yaml:"label_results_cache" doc:"description=If label_results_cache is not configured and cache_label_results is true, the config for the results cache is used."`
+	Transformer                  UserIDTransformer         `yaml:"-"`
+	CacheIndexStatsResults       bool                      `yaml:"cache_index_stats_results"`
+	StatsCacheConfig             IndexStatsCacheConfig     `yaml:"index_stats_results_cache" doc:"description=If a cache config is not specified and cache_index_stats_results is true, the config for the results cache is used."`
+	CacheVolumeResults           bool                      `yaml:"cache_volume_results"`
+	VolumeCacheConfig            VolumeCacheConfig         `yaml:"volume_results_cache" doc:"description=If a cache config is not specified and cache_volume_results is true, the config for the results cache is used."`
+	CacheInstantMetricResults    bool                      `yaml:"cache_instant_metric_results"`
+	InstantMetricCacheConfig     InstantMetricCacheConfig  `yaml:"instant_metric_results_cache" doc:"description=If a cache config is not specified and cache_instant_metric_results is true, the config for the results cache is used."`
+	InstantMetricQuerySplitAlign bool                      `yaml:"instant_metric_query_split_align" doc:"description=Whether to align the splits of instant metric query with splitByInterval and query's exec time. Useful when instant_metric_cache is enabled"`
+	CacheSeriesResults           bool                      `yaml:"cache_series_results"`
+	SeriesCacheConfig            SeriesCacheConfig         `yaml:"series_results_cache" doc:"description=If series_results_cache is not configured and cache_series_results is true, the config for the results cache is used."`
+	CacheLabelResults            bool                      `yaml:"cache_label_results"`
+	LabelsCacheConfig            LabelsCacheConfig         `yaml:"label_results_cache" doc:"description=If label_results_cache is not configured and cache_label_results is true, the config for the results cache is used."`
+	CacheDetectedFieldsResults   bool                      `yaml:"cache_detected_fields_results"`
+	DetectedFieldsCacheConfig    DetectedFieldsCacheConfig `yaml:"detected_fields_results_cache" doc:"description=If detected_fields_results_cache is not configured and cache_detected_fields_results is true, the config for the results cache is used."`
 }
 
 // RegisterFlags adds the flags required to configure this flag set.
@@ -73,6 +75,8 @@ func (cfg *Config) RegisterFlags(f *flag.FlagSet) {
 	cfg.SeriesCacheConfig.RegisterFlags(f)
 	f.BoolVar(&cfg.CacheLabelResults, "querier.cache-label-results", false, "Cache label query results.")
 	cfg.LabelsCacheConfig.RegisterFlags(f)
+	f.BoolVar(&cfg.CacheDetectedFieldsResults, "querier.cache-detected-fields-results", false, "Cache detected fields results.")
+	cfg.DetectedFieldsCacheConfig.RegisterFlags(f)
 }
 
 // Validate validates the config.
@@ -138,13 +142,14 @@ func NewMiddleware(
 	metrics := NewMetrics(registerer, metricsNamespace)
 
 	var (
-		resultsCache       cache.Cache
-		statsCache         cache.Cache
-		volumeCache        cache.Cache
-		instantMetricCache cache.Cache
-		seriesCache        cache.Cache
-		labelsCache        cache.Cache
-		err                error
+		resultsCache        cache.Cache
+		statsCache          cache.Cache
+		volumeCache         cache.Cache
+		instantMetricCache  cache.Cache
+		seriesCache         cache.Cache
+		labelsCache         cache.Cache
+		detectedFieldsCache cache.Cache
+		err                 error
 	)
 
 	if cfg.CacheResults {
@@ -184,6 +189,13 @@ func NewMiddleware(
 
 	if cfg.CacheLabelResults {
 		labelsCache, err = newResultsCacheFromConfig(cfg.LabelsCacheConfig.ResultsCacheConfig, registerer, log, stats.LabelResultCache)
+		if err != nil {
+			return nil, nil, err
+		}
+	}
+
+	if cfg.CacheDetectedFieldsResults {
+		detectedFieldsCache, err = newResultsCacheFromConfig(cfg.DetectedFieldsCacheConfig.ResultsCacheConfig, registerer, log, stats.DetectedFieldsResultCache)
 		if err != nil {
 			return nil, nil, err
 		}
@@ -235,44 +247,62 @@ func NewMiddleware(
 		return nil, nil, err
 	}
 
+	detectedFieldsTripperware, err := NewDetectedFieldsTripperware(
+		cfg,
+		log,
+		limits,
+		codec,
+		iqo,
+		detectedFieldsCache,
+		cacheGenNumLoader,
+		retentionEnabled,
+		metrics,
+		schema,
+		metricsNamespace)
+	if err != nil {
+		return nil, nil, err
+	}
+
 	return base.MiddlewareFunc(func(next base.Handler) base.Handler {
 		var (
-			metricRT       = metricsTripperware.Wrap(next)
-			limitedRT      = limitedTripperware.Wrap(next)
-			logFilterRT    = logFilterTripperware.Wrap(next)
-			seriesRT       = seriesTripperware.Wrap(next)
-			labelsRT       = labelsTripperware.Wrap(next)
-			instantRT      = instantMetricTripperware.Wrap(next)
-			statsRT        = indexStatsTripperware.Wrap(next)
-			seriesVolumeRT = seriesVolumeTripperware.Wrap(next)
+			metricRT         = metricsTripperware.Wrap(next)
+			limitedRT        = limitedTripperware.Wrap(next)
+			logFilterRT      = logFilterTripperware.Wrap(next)
+			seriesRT         = seriesTripperware.Wrap(next)
+			labelsRT         = labelsTripperware.Wrap(next)
+			instantRT        = instantMetricTripperware.Wrap(next)
+			statsRT          = indexStatsTripperware.Wrap(next)
+			seriesVolumeRT   = seriesVolumeTripperware.Wrap(next)
+			detectedFieldsRT = detectedFieldsTripperware.Wrap(next)
 		)
 
-		return newRoundTripper(log, next, limitedRT, logFilterRT, metricRT, seriesRT, labelsRT, instantRT, statsRT, seriesVolumeRT, limits)
+		return newRoundTripper(log, next, limitedRT, logFilterRT, metricRT, seriesRT, labelsRT, instantRT, statsRT, seriesVolumeRT, detectedFieldsRT, limits)
 	}), StopperWrapper{resultsCache, statsCache, volumeCache}, nil
 }
 
 type roundTripper struct {
 	logger log.Logger
 
-	next, limited, log, metric, series, labels, instantMetric, indexStats, seriesVolume base.Handler
+	next, limited, log, metric, series, labels, instantMetric, indexStats, seriesVolume, detectedFields base.Handler
 
 	limits Limits
 }
 
 // newRoundTripper creates a new queryrange roundtripper
-func newRoundTripper(logger log.Logger, next, limited, log, metric, series, labels, instantMetric, indexStats, seriesVolume base.Handler, limits Limits) roundTripper {
+func newRoundTripper(logger log.Logger, next, limited, log, metric, series, labels, instantMetric, indexStats, seriesVolume, detectedFields base.Handler, limits Limits) roundTripper {
 	return roundTripper{
-		logger:        logger,
-		limited:       limited,
-		log:           log,
-		limits:        limits,
-		metric:        metric,
-		series:        series,
-		labels:        labels,
-		instantMetric: instantMetric,
-		indexStats:    indexStats,
-		seriesVolume:  seriesVolume,
-		next:          next,
+		logger:         logger,
+		limited:        limited,
+		log:            log,
+		limits:         limits,
+		metric:         metric,
+		series:         series,
+		labels:         labels,
+		instantMetric:  instantMetric,
+		indexStats:     indexStats,
+		seriesVolume:   seriesVolume,
+		detectedFields: detectedFields,
+		next:           next,
 	}
 }
 
@@ -365,6 +395,17 @@ func (r roundTripper) Do(ctx context.Context, req base.Request) (base.Response, 
 		)
 
 		return r.seriesVolume.Do(ctx, req)
+	case *DetectedFieldsRequest:
+		level.Info(logger).Log(
+			"msg", "executing query",
+			"type", "detected fields",
+			"query", op.Query,
+			"length", op.End.Sub(*op.Start),
+			"start", op.Start,
+			"end", op.End,
+		)
+
+		return r.detectedFields.Do(ctx, req)
 	default:
 		return r.next.Do(ctx, req)
 	}
@@ -390,13 +431,14 @@ func transformRegexQuery(req *http.Request, expr syntax.LogSelectorExpr) (syntax
 }
 
 const (
-	InstantQueryOp = "instant_query"
-	QueryRangeOp   = "query_range"
-	SeriesOp       = "series"
-	LabelNamesOp   = "labels"
-	IndexStatsOp   = "index_stats"
-	VolumeOp       = "volume"
-	VolumeRangeOp  = "volume_range"
+	InstantQueryOp   = "instant_query"
+	QueryRangeOp     = "query_range"
+	SeriesOp         = "series"
+	LabelNamesOp     = "labels"
+	IndexStatsOp     = "index_stats"
+	VolumeOp         = "volume"
+	VolumeRangeOp    = "volume_range"
+	DetectedFieldsOp = "detected_fields"
 )
 
 func getOperation(path string) string {
@@ -415,6 +457,8 @@ func getOperation(path string) string {
 		return VolumeOp
 	case path == "/loki/api/v1/index/volume_range":
 		return VolumeRangeOp
+	case path == "/loki/api/experimental/detected_fields":
+		return DetectedFieldsOp
 	default:
 		return ""
 	}
@@ -1068,5 +1112,77 @@ func sharedIndexTripperware(
 		}
 
 		return base.MergeMiddlewares(middlewares...).Wrap(next)
+	}), nil
+}
+
+func NewDetectedFieldsTripperware(
+	cfg Config,
+	log log.Logger,
+	limits Limits,
+	merger base.Merger,
+	iqo util.IngesterQueryOptions,
+	c cache.Cache,
+	cacheGenNumLoader base.CacheGenNumberLoader,
+	retentionEnabled bool,
+	metrics *Metrics,
+	schema config.SchemaConfig,
+	metricsNamespace string,
+) (base.Middleware, error) {
+	var cacheMiddleware base.Middleware
+	if cfg.CacheLabelResults {
+		var err error
+		cacheMiddleware, err = NewDetectedFieldsCacheMiddleware(
+			log,
+			limits,
+			merger,
+			c,
+			cacheGenNumLoader,
+			func(_ context.Context, r base.Request) bool {
+				return !r.GetCachingOptions().Disabled
+			},
+			func(ctx context.Context, tenantIDs []string, r base.Request) int {
+				return MinWeightedParallelism(
+					ctx,
+					tenantIDs,
+					schema.Configs,
+					limits,
+					model.Time(r.GetStart().UnixMilli()),
+					model.Time(r.GetEnd().UnixMilli()),
+				)
+			},
+			retentionEnabled,
+			cfg.Transformer,
+			metrics.ResultsCacheMetrics,
+		)
+		if err != nil {
+			return nil, fmt.Errorf("failed to create labels cache middleware: %w", err)
+		}
+	}
+
+	queryRangeMiddleware := []base.Middleware{
+		StatsCollectorMiddleware(),
+		NewLimitsMiddleware(limits),
+		base.InstrumentMiddleware("split_by_interval", metrics.InstrumentMiddlewareMetrics),
+		SplitByIntervalMiddleware(schema.Configs, limits, merger, newDefaultSplitter(limits, iqo), metrics.SplitByMetrics),
+	}
+
+	if cfg.CacheLabelResults {
+		queryRangeMiddleware = append(
+			queryRangeMiddleware,
+			base.InstrumentMiddleware("label_results_cache", metrics.InstrumentMiddlewareMetrics),
+			cacheMiddleware,
+		)
+	}
+
+	if cfg.MaxRetries > 0 {
+		queryRangeMiddleware = append(queryRangeMiddleware,
+			base.InstrumentMiddleware("retry", metrics.InstrumentMiddlewareMetrics),
+			base.NewRetryMiddleware(log, cfg.MaxRetries, metrics.RetryMiddlewareMetrics, metricsNamespace),
+		)
+	}
+
+	return base.MiddlewareFunc(func(next base.Handler) base.Handler {
+		// Do not forward any request header.
+		return base.MergeMiddlewares(queryRangeMiddleware...).Wrap(next)
 	}), nil
 }

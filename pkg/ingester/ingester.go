@@ -379,7 +379,7 @@ func (i *Ingester) setupAutoForget() {
 				}
 
 				if len(forgetList) == len(ringDesc.Ingesters)-1 {
-					level.Warn(i.logger).Log("msg", fmt.Sprintf("autoforget have seen %d unhealthy ingesters out of %d, network may be partioned, skip forgeting ingesters this round", len(forgetList), len(ringDesc.Ingesters)))
+					level.Warn(i.logger).Log("msg", fmt.Sprintf("autoforget have seen %d unhealthy ingesters out of %d, network may be partitioned, skip forgeting ingesters this round", len(forgetList), len(ringDesc.Ingesters)))
 					forgetList = forgetList[:0]
 					return nil, false, nil
 				}
@@ -1358,4 +1358,15 @@ func adjustQueryStartTime(maxLookBackPeriod time.Duration, start, now time.Time)
 		}
 	}
 	return start
+}
+
+func (i *Ingester) GetDetectedFields(ctx context.Context, req *logproto.DetectedFieldsRequest) (*logproto.DetectedFieldsResponse, error) {
+	return &logproto.DetectedFieldsResponse{
+		Fields: []*logproto.DetectedField{
+			{
+				Label:     "foo",
+				IsWrapped: false,
+			},
+		},
+	}, nil
 }

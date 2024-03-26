@@ -64,6 +64,7 @@ const (
 	WriteDedupeCache          CacheType = "write-dedupe"          //nolint:staticcheck
 	SeriesResultCache         CacheType = "series-result"         //nolint:staticcheck
 	LabelResultCache          CacheType = "label-result"          //nolint:staticcheck
+	DetectedFieldsResultCache CacheType = "detecte-fields-result" //nolint:staticcheck
 	BloomFilterCache          CacheType = "bloom-filter"          //nolint:staticcheck
 	BloomBlocksCache          CacheType = "bloom-blocks"          //nolint:staticcheck
 	BloomMetasCache           CacheType = "bloom-metas"           //nolint:staticcheck
@@ -491,6 +492,8 @@ func (c *Context) getCacheStatsByType(t CacheType) *Cache {
 		stats = &c.caches.SeriesResult
 	case LabelResultCache:
 		stats = &c.caches.LabelResult
+	case DetectedFieldsResultCache:
+		stats = &c.caches.DetectedFieldsResult
 	case InstantMetricResultsCache:
 		stats = &c.caches.InstantMetricResult
 	default:
