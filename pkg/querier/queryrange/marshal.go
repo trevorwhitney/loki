@@ -212,6 +212,8 @@ func QueryResponseUnwrap(res *QueryResponse) (queryrangebase.Response, error) {
 		return concrete.TopkSketches, nil
 	case *QueryResponse_QuantileSketches:
 		return concrete.QuantileSketches, nil
+	case *QueryResponse_DetectedLabels:
+		return concrete.DetectedLabels, nil
 	default:
 		return nil, fmt.Errorf("unsupported QueryResponse response type, got (%T)", res.Response)
 	}
@@ -247,6 +249,8 @@ func QueryResponseWrap(res queryrangebase.Response) (*QueryResponse, error) {
 		p.Response = &QueryResponse_QuantileSketches{response}
 	case *ShardsResponse:
 		p.Response = &QueryResponse_ShardsResponse{response}
+	case *DetectedLabelsResponse:
+		p.Response = &QueryResponse_DetectedLabels{response}
 	default:
 		return nil, fmt.Errorf("invalid response format, got (%T)", res)
 	}
@@ -335,6 +339,14 @@ func (Codec) QueryRequestUnwrap(ctx context.Context, req *QueryRequest) (queryra
 		return &LabelRequest{
 			LabelRequest: *concrete.Labels,
 		}, ctx, nil
+	case *QueryRequest_DetectedLabels:
+		return &DetectedLabelsRequest{
+			DetectedLabelsRequest: *concrete.DetectedLabels,
+		}, ctx, nil
+	case *QueryRequest_DetectedFields:
+		return &DetectedFieldsRequest{
+			DetectedFieldsRequest: *concrete.DetectedFields,
+		}, ctx, nil
 	default:
 		return nil, ctx, fmt.Errorf("unsupported request type while unwrapping, got (%T)", req.Request)
 	}
@@ -361,6 +373,10 @@ func (Codec) QueryRequestWrap(ctx context.Context, r queryrangebase.Request) (*Q
 		result.Request = &QueryRequest_Streams{Streams: req}
 	case *logproto.ShardsRequest:
 		result.Request = &QueryRequest_ShardsRequest{ShardsRequest: req}
+	case *DetectedLabelsRequest:
+		result.Request = &QueryRequest_DetectedLabels{DetectedLabels: &req.DetectedLabelsRequest}
+	case *DetectedFieldsRequest:
+		result.Request = &QueryRequest_DetectedFields{DetectedFields: &req.DetectedFieldsRequest}
 	default:
 		return nil, fmt.Errorf("unsupported request type while wrapping, got (%T)", r)
 	}

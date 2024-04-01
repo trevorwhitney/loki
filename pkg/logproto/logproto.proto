@@ -426,13 +426,16 @@ message Volume {
 message DetectedFieldsRequest {
   google.protobuf.Timestamp start = 1 [
     (gogoproto.stdtime) = true,
-    (gogoproto.nullable) = true
+    (gogoproto.nullable) = false
   ];
   google.protobuf.Timestamp end = 2 [
     (gogoproto.stdtime) = true,
-    (gogoproto.nullable) = true
+    (gogoproto.nullable) = false
   ];
   string query = 3; // Naming this query instead of match because this should be with queryrangebase.Request interface
+  uint32 lineLimit = 4;
+  uint32 fieldLimit = 5;
+  int64 step = 6;
 }
 
 message DetectedFieldsResponse {
@@ -443,4 +446,24 @@ message DetectedField {
   string label = 1;
   string type = 2 [(gogoproto.casttype) = "DetectedFieldType"];
   uint64 cardinality = 3;
+}
+
+message DetectedLabelsRequest {
+  google.protobuf.Timestamp start = 1 [
+    (gogoproto.stdtime) = true,
+    (gogoproto.nullable) = true
+  ];
+  google.protobuf.Timestamp end = 2 [
+    (gogoproto.stdtime) = true,
+    (gogoproto.nullable) = true
+  ];
+  string query = 3;
+}
+
+message DetectedLabelsResponse {
+  repeated DetectedLabel detectedLabels = 1;
+}
+
+message DetectedLabel {
+  string label = 1;
 }
