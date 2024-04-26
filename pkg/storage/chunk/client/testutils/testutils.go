@@ -102,6 +102,7 @@ func DummyChunkFor(from, through model.Time, metric labels.Labels) chunk.Chunk {
 		chunkenc.NewFacade(cs, 0, 0),
 		from,
 		through,
+		[]chunk.Sample{},
 	)
 	// Force checksum calculation.
 	err := chunk.Encode()

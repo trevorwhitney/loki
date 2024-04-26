@@ -419,6 +419,7 @@ func TestChunkEncodingRoundTrip(t *testing.T) {
 	for _, version := range []int{
 		FormatV2,
 		FormatV3,
+		FormatV4,
 	} {
 		for _, nChks := range []int{
 			0,
@@ -592,7 +593,7 @@ func TestSearchWithPageMarkers(t *testing.T) {
 				decbuf := encoding.DecWrap(tsdb_enc.Decbuf{B: primary.Get()})
 				dec := newDecoder(nil, 0)
 				dst := []ChunkMeta{}
-				require.Nil(t, dec.readChunksV3(&decbuf, tc.mint, tc.maxt, &dst))
+				require.Nil(t, dec.readChunksV3(&decbuf, tc.mint, tc.maxt, &dst, FormatV3))
 				require.Equal(t, tc.exp, dst)
 			})
 		}
@@ -605,6 +606,7 @@ func TestDecoderChunkStats(t *testing.T) {
 		for _, version := range []int{
 			FormatV2,
 			FormatV3,
+			FormatV4,
 		} {
 			for _, tc := range []struct {
 				desc          string
@@ -720,7 +722,7 @@ func BenchmarkChunkStats(b *testing.B) {
 		chks := mkChks(nChks)
 		// Only request the middle 20% of chunks.
 		from, through := int64(nChks*40/100), int64(nChks*60/100)
-		for _, version := range []int{FormatV2, FormatV3} {
+		for _, version := range []int{FormatV2, FormatV3, FormatV4} {
 			b.Run(fmt.Sprintf("version %d/%d chunks", version, nChks), func(b *testing.B) {
 				var w Writer
 				w.Version = version
@@ -745,7 +747,7 @@ func BenchmarkReadChunks(b *testing.B) {
 		res := ChunkMetasPool.Get()
 		// Only request the middle 20% of chunks.
 		from, through := int64(nChks*40/100), int64(nChks*60/100)
-		for _, version := range []int{FormatV2, FormatV3} {
+		for _, version := range []int{FormatV2, FormatV3, FormatV4} {
 			b.Run(fmt.Sprintf("version %d/%d chunks", version, nChks), func(b *testing.B) {
 				var w Writer
 				w.Version = version

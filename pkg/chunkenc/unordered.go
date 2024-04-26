@@ -18,6 +18,7 @@ import (
 	"github.com/grafana/loki/pkg/logproto"
 	"github.com/grafana/loki/pkg/logql/log"
 	"github.com/grafana/loki/pkg/logqlmodel/stats"
+	"github.com/grafana/loki/pkg/storage/chunk"
 )
 
 var noopStreamPipeline = log.NewNoopPipeline().ForStream(labels.Labels{})
@@ -32,6 +33,7 @@ type HeadBlock interface {
 	Reset()
 	Bounds() (mint, maxt int64)
 	Entries() int
+	Samples() []chunk.Sample
 	UncompressedSize() int
 	Convert(HeadBlockFmt, *symbolizer) (HeadBlock, error)
 	Append(int64, string, labels.Labels) error
@@ -62,6 +64,8 @@ type unorderedHeadBlock struct {
 	lines      int   // number of entries
 	size       int   // size of uncompressed bytes.
 	mint, maxt int64 // upper and lower bounds
+
+	samples []chunk.Sample
 }
 
 func newUnorderedHeadBlock(headBlockFmt HeadBlockFmt, symbolizer *symbolizer) *unorderedHeadBlock {
@@ -69,6 +73,7 @@ func newUnorderedHeadBlock(headBlockFmt HeadBlockFmt, symbolizer *symbolizer) *u
 		format:     headBlockFmt,
 		symbolizer: symbolizer,
 		rt:         rangetree.New(1),
+		samples:    []chunk.Sample{},
 	}
 }
 
@@ -84,6 +89,10 @@ func (hb *unorderedHeadBlock) Bounds() (int64, int64) {
 
 func (hb *unorderedHeadBlock) Entries() int {
 	return hb.lines
+}
+
+func (hb *unorderedHeadBlock) Samples() []chunk.Sample {
+	return hb.samples
 }
 
 func (hb *unorderedHeadBlock) UncompressedSize() int {
@@ -110,6 +119,7 @@ func (e *nsEntries) ValueAtDimension(_ uint64) int64 {
 	return e.ts
 }
 
+//TODO(twhitney): when do we poll for samples?
 func (hb *unorderedHeadBlock) Append(ts int64, line string, structuredMetadata labels.Labels) error {
 	if hb.format < UnorderedWithStructuredMetadataHeadBlockFmt {
 		// structuredMetadata must be ignored for the previous head block formats
@@ -143,7 +153,7 @@ func (hb *unorderedHeadBlock) Append(ts int64, line string, structuredMetadata l
 		e.entries = []nsEntry{{line, hb.symbolizer.Add(structuredMetadata)}}
 	}
 
-	// Update hb metdata
+	// Update hb metadata
 	if hb.size == 0 || hb.mint > ts {
 		hb.mint = ts
 	}
@@ -570,6 +580,22 @@ func (hb *unorderedHeadBlock) LoadBytes(b []byte) error {
 		line := string(db.bytes(lineLn))
 
 		var structuredMetadataSymbols symbols
+		if version >= UnorderedWithStructuredMetadataAndSamplesHeadBlockFmt.Byte() {
+			sampleLen := db.uvarint()
+      hb.samples = make([]chunk.Sample, sampleLen)
+			for i := 0; i < sampleLen && db.err() == nil; i++ {
+        ts := db.varint64()
+        kb := db.be32()
+        entries := db.be32()
+        
+				hb.samples[i] = chunk.Sample{
+          Timestamp: ts,
+          KB: kb,
+          Entries: entries,
+        }
+			}
+		}
+
 		if version >= UnorderedWithStructuredMetadataHeadBlockFmt.Byte() {
 			metaLn := db.uvarint()
 			if metaLn > 0 {

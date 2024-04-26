@@ -112,7 +112,15 @@ func newChunk(chunkFormat byte, headBlockFmt chunkenc.HeadBlockFmt, stream logpr
 		_ = chk.Append(&e)
 	}
 	chk.Close()
-	c := chunk.NewChunk("fake", client.Fingerprint(lbs), lbs, chunkenc.NewFacade(chk, 0, 0), from, through)
+	c := chunk.NewChunk(
+		"fake",
+		client.Fingerprint(lbs),
+		lbs,
+		chunkenc.NewFacade(chk, 0, 0),
+		from,
+		through,
+		[]chunk.Sample{},
+	)
 	// force the checksum creation
 	if err := c.Encode(); err != nil {
 		panic(err)

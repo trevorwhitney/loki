@@ -1,6 +1,7 @@
 package index
 
 import (
+	"slices"
 	"sort"
 
 	"github.com/prometheus/common/model"
@@ -8,6 +9,46 @@ import (
 	"github.com/grafana/loki/pkg/util"
 	"github.com/grafana/loki/pkg/util/encoding"
 )
+
+type Sample struct {
+	Timestamp int64
+	KB        uint32
+	Entries   uint32
+}
+
+type Samples []Sample
+
+//TODO(twhitney): How often is this run, and is this the best way to do this?
+//TODO(twhitney): Move sorting to Finalize. This is called in Drop and assumes ChunkMetas have already
+// ben sorted by Finalize. So we should just sort samples in finalize.
+func (d *Samples) Equals(other Samples) bool {
+	if len(*d) != len(other) {
+		return false
+	}
+
+	sortFunc := func(i, j Sample) int {
+		if i.Timestamp < j.Timestamp {
+			return -1
+		}
+
+		if i.Timestamp > j.Timestamp {
+			return 1
+		}
+
+		return 0
+	}
+
+	slices.SortFunc(*d, sortFunc)
+	slices.SortFunc(other, sortFunc)
+
+	for i, v := range *d {
+		if other[i].Timestamp != v.Timestamp || other[i].KB != v.KB || other[i].Entries != v.Entries {
+			return false
+		}
+	}
+
+	return true
+}
 
 // Meta holds information about a chunk of data.
 type ChunkMeta struct {
@@ -19,11 +60,25 @@ type ChunkMeta struct {
 	KB uint32
 
 	Entries uint32
+
+	Samples Samples
 }
 
 func (c ChunkMeta) From() model.Time                 { return model.Time(c.MinTime) }
 func (c ChunkMeta) Through() model.Time              { return model.Time(c.MaxTime) }
 func (c ChunkMeta) Bounds() (model.Time, model.Time) { return c.From(), c.Through() }
+func (c ChunkMeta) Equals(other ChunkMeta) bool {
+	if c.Checksum != other.Checksum ||
+		c.MinTime != other.MinTime ||
+		c.MaxTime != other.MaxTime ||
+		c.KB != other.KB ||
+		c.Entries != other.Entries ||
+		!c.Samples.Equals(other.Samples) {
+		return false
+	}
+
+	return true
+}
 
 type ChunkMetas []ChunkMeta
 
@@ -151,7 +206,7 @@ func (c ChunkMetas) Drop(chk ChunkMeta) (ChunkMetas, bool) {
 		return ichk.Checksum >= chk.Checksum
 	})
 
-	if j >= len(c) || c[j] != chk {
+	if j >= len(c) || !c[j].Equals(chk) {
 		return c, false
 	}
 

@@ -152,6 +152,7 @@ func (s *store) Stop() {
 func (s *store) IndexChunk(_ context.Context, _ model.Time, _ model.Time, chk chunk.Chunk) error {
 	// Always write the index to benefit durability via replication factor.
 	approxKB := math.Round(float64(chk.Data.UncompressedSize()) / float64(1<<10))
+
 	metas := tsdbindex.ChunkMetas{
 		{
 			Checksum: chk.ChunkRef.Checksum,
@@ -159,12 +160,27 @@ func (s *store) IndexChunk(_ context.Context, _ model.Time, _ model.Time, chk ch
 			MaxTime:  int64(chk.ChunkRef.Through),
 			KB:       uint32(approxKB),
 			Entries:  uint32(chk.Data.Entries()),
+			Samples: convertSamples(
+				chk.Samples,
+			), // TODO(twhitney): move sample definition somewhere that can be imported into both chunks and tsdbindex?
 		},
 	}
 	if err := s.indexWriter.Append(chk.UserID, chk.Metric, chk.ChunkRef.Fingerprint, metas); err != nil {
 		return errors.Wrap(err, "writing index entry")
 	}
 	return nil
+}
+
+func convertSamples(samples []chunk.Sample) tsdbindex.Samples {
+	converted := make(tsdbindex.Samples, len(samples))
+	for i, s := range samples {
+		converted[i] = tsdbindex.Sample{
+			Timestamp: s.Timestamp,
+			KB:        s.KB,
+			Entries:   s.Entries,
+		}
+	}
+	return converted
 }
 
 type failingIndexWriter struct{}

@@ -1,8 +1,8 @@
 auth_enabled: false
 
 server:
-  http_listen_port: 3100
-  grpc_listen_port: 9096
+  http_listen_port: 3101
+  grpc_listen_port: 9097
 
 common:
   instance_addr: 127.0.0.1
@@ -33,9 +33,6 @@ schema_config:
         path_prefix: index/
         prefix: index_
         period: 24h
-
-querier:
-  query_store_only: true
 
 compactor:
   compaction_interval: 1m

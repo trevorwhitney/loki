@@ -301,11 +301,13 @@ func (i *Ingester) flushChunks(ctx context.Context, fp model.Fingerprint, labelP
 		}
 
 		firstTime, lastTime := util.RoundToMilliseconds(c.chunk.Bounds())
+
 		ch := chunk.NewChunk(
 			userID, fp, metric,
 			chunkenc.NewFacade(c.chunk, i.cfg.BlockSize, i.cfg.TargetChunkSize),
 			firstTime,
 			lastTime,
+      c.chunk.Samples(),
 		)
 
 		// encodeChunk mutates the chunk so we must pass by reference

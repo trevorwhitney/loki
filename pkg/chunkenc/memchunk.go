@@ -32,6 +32,7 @@ const (
 	ChunkFormatV2
 	ChunkFormatV3
 	ChunkFormatV4
+	ChunkFormatV5
 
 	blocksPerChunk = 10
 	maxLineLength  = 1024 * 1024 * 1024
@@ -82,6 +83,7 @@ const (
 	OrderedHeadBlockFmt
 	UnorderedHeadBlockFmt
 	UnorderedWithStructuredMetadataHeadBlockFmt
+	UnorderedWithStructuredMetadataAndSamplesHeadBlockFmt
 )
 
 // ChunkHeadFormatFor returns corresponding head block format for the given `chunkfmt`.
@@ -94,8 +96,12 @@ func ChunkHeadFormatFor(chunkfmt byte) HeadBlockFmt {
 		return UnorderedHeadBlockFmt
 	}
 
-	// return the latest head format for all chunkformat >v3
-	return UnorderedWithStructuredMetadataHeadBlockFmt
+	if chunkfmt == ChunkFormatV4 {
+		return UnorderedWithStructuredMetadataHeadBlockFmt
+	}
+
+	// return the latest head format for all chunkformat >v4
+	return UnorderedWithStructuredMetadataAndSamplesHeadBlockFmt
 }
 
 var magicNumber = uint32(0x12EE56A)
@@ -137,6 +143,8 @@ type MemChunk struct {
 
 	// compressed size of chunk. Set when chunk is cut or while decoding chunk from storage.
 	compressedSize int
+
+	samples []chunk.Sample
 }
 
 type block struct {
@@ -148,6 +156,8 @@ type block struct {
 
 	offset           int // The offset of the block in the chunk.
 	uncompressedSize int // Total uncompressed size in bytes when the chunk is cut.
+
+	samples []chunk.Sample
 }
 
 // This block holds the un-compressed entries. Once it has enough data, this is
@@ -158,6 +168,8 @@ type headBlock struct {
 	size    int // size of uncompressed bytes.
 
 	mint, maxt int64
+
+	samples []chunk.Sample
 }
 
 func (hb *headBlock) Format() HeadBlockFmt { return OrderedHeadBlockFmt }
@@ -167,6 +179,8 @@ func (hb *headBlock) IsEmpty() bool {
 }
 
 func (hb *headBlock) Entries() int { return len(hb.entries) }
+
+func (hb *headBlock) Samples() []chunk.Sample { return hb.samples }
 
 func (hb *headBlock) UncompressedSize() int { return hb.size }
 
@@ -181,6 +195,7 @@ func (hb *headBlock) Reset() {
 
 func (hb *headBlock) Bounds() (int64, int64) { return hb.mint, hb.maxt }
 
+// TODO(twhitney): when do we sample count and bytes?
 func (hb *headBlock) Append(ts int64, line string, _ labels.Labels) error {
 	if !hb.IsEmpty() && hb.maxt > ts {
 		return ErrOutOfOrder
@@ -268,11 +283,21 @@ func (hb *headBlock) CheckpointTo(w io.Writer) error {
 	eb.putVarint64(hb.mint)
 	eb.putVarint64(hb.maxt)
 
+	eb.putUvarint(len(hb.samples))
+
 	_, err = w.Write(eb.get())
 	if err != nil {
 		return errors.Wrap(err, "write headBlock metas")
 	}
 	eb.reset()
+
+	for _, sample := range hb.samples {
+		eb.putVarint64(sample.Timestamp)
+		eb.putBE32(sample.KB)
+		eb.putBE32(sample.Entries)
+		w.Write(eb.get())
+		eb.reset()
+	}
 
 	for _, entry := range hb.entries {
 		eb.putVarint64(entry.t)
@@ -304,33 +329,80 @@ func (hb *headBlock) LoadBytes(b []byte) error {
 	}
 	switch version {
 	case ChunkFormatV1, ChunkFormatV2, ChunkFormatV3, ChunkFormatV4:
+		ln := db.uvarint()
+		hb.size = db.uvarint()
+		hb.mint = db.varint64()
+		hb.maxt = db.varint64()
+
+		if err := db.err(); err != nil {
+			return errors.Wrap(err, "verifying headblock metadata")
+		}
+
+		hb.entries = make([]entry, ln)
+		for i := 0; i < ln && db.err() == nil; i++ {
+			var entry entry
+			entry.t = db.varint64()
+			lineLn := db.uvarint()
+			entry.s = string(db.bytes(lineLn))
+			hb.entries[i] = entry
+		}
+
+		if err := db.err(); err != nil {
+			return errors.Wrap(err, "decoding entries")
+		}
+
+		return nil
+		// V5 adds chunk samples
+	case ChunkFormatV5:
+		ln := db.uvarint()
+		hb.size = db.uvarint()
+		hb.mint = db.varint64()
+		hb.maxt = db.varint64()
+
+		if err := db.err(); err != nil {
+			return errors.Wrap(err, "verifying headblock metadata")
+		}
+
+		samplesLength := db.uvarint()
+		hb.samples = make([]chunk.Sample, samplesLength)
+		for i := 0; i < samplesLength && db.err() == nil; i++ {
+			timestamp := db.varint64()
+			kb := db.be32()
+			entries := db.be32()
+
+			sample := chunk.Sample{
+				Timestamp: timestamp,
+				KB:        kb,
+				Entries:   entries,
+			}
+
+			hb.samples[i] = sample
+		}
+
+		if err := db.err(); err != nil {
+			return errors.Wrap(err, "decoding detected fields")
+		}
+
+		hb.entries = make([]entry, ln)
+		for i := 0; i < ln && db.err() == nil; i++ {
+			var entry entry
+			entry.t = db.varint64()
+			lineLn := db.uvarint()
+			entry.s = string(db.bytes(lineLn))
+			hb.entries[i] = entry
+		}
+
+		if err := db.err(); err != nil {
+			return errors.Wrap(err, "decoding entries")
+		}
+
+		return nil
 	default:
-		return errors.Errorf("incompatible headBlock version (%v), only V1,V2,V3 is currently supported", version)
+		return errors.Errorf(
+			"incompatible headBlock version (%v), only V1,V2,V3,V4,V5 is currently supported",
+			version,
+		)
 	}
-
-	ln := db.uvarint()
-	hb.size = db.uvarint()
-	hb.mint = db.varint64()
-	hb.maxt = db.varint64()
-
-	if err := db.err(); err != nil {
-		return errors.Wrap(err, "verifying headblock metadata")
-	}
-
-	hb.entries = make([]entry, ln)
-	for i := 0; i < ln && db.err() == nil; i++ {
-		var entry entry
-		entry.t = db.varint64()
-		lineLn := db.uvarint()
-		entry.s = string(db.bytes(lineLn))
-		hb.entries[i] = entry
-	}
-
-	if err := db.err(); err != nil {
-		return errors.Wrap(err, "decoding entries")
-	}
-
-	return nil
 }
 
 func (hb *headBlock) Convert(version HeadBlockFmt, symbolizer *symbolizer) (HeadBlock, error) {
@@ -363,8 +435,12 @@ func panicIfInvalidFormat(chunkFmt byte, head HeadBlockFmt) {
 		panic("only OrderedHeadBlockFmt is supported for V2 chunks")
 	}
 	if chunkFmt == ChunkFormatV4 && head != UnorderedWithStructuredMetadataHeadBlockFmt {
-		fmt.Println("received head fmt", head.String())
 		panic("only UnorderedWithStructuredMetadataHeadBlockFmt is supported for V4 chunks")
+	}
+	if chunkFmt == ChunkFormatV5 && head != UnorderedWithStructuredMetadataAndSamplesHeadBlockFmt {
+		panic(
+			"only UnorderedWithStructuredMetadataAndDetectedFieldsHeadBlockFmt is supported for V5 chunks",
+		)
 	}
 }
 
@@ -384,6 +460,8 @@ func newMemChunkWithFormat(format byte, enc Encoding, head HeadBlockFmt, blockSi
 		encoding:   enc,
 		headFmt:    head,
 		symbolizer: symbolizer,
+
+		samples: []chunk.Sample{},
 	}
 }
 
@@ -399,6 +477,8 @@ func newByteChunk(b []byte, blockSize, targetSize int, fromCheckpoint bool) (*Me
 		targetSize:     targetSize,
 		symbolizer:     newSymbolizer(),
 		compressedSize: len(b),
+
+		samples: []chunk.Sample{},
 	}
 	db := decbuf{b: b}
 
@@ -414,7 +494,7 @@ func newByteChunk(b []byte, blockSize, targetSize int, fromCheckpoint bool) (*Me
 	switch version {
 	case ChunkFormatV1:
 		bc.encoding = EncGZIP
-	case ChunkFormatV2, ChunkFormatV3, ChunkFormatV4:
+	case ChunkFormatV2, ChunkFormatV3, ChunkFormatV4, ChunkFormatV5:
 		// format v2+ has a byte for block encoding.
 		enc := Encoding(db.byte())
 		if db.err() != nil {
@@ -926,6 +1006,11 @@ func (c *MemChunk) cut() error {
 		uncompressedSize: c.head.UncompressedSize(),
 	})
 
+	if c.samples == nil {
+		c.samples = make([]chunk.Sample, 0, len(c.head.Samples()))
+	}
+	c.samples = append(c.samples, c.head.Samples()...)
+
 	c.cutBlockSize += len(b)
 
 	c.head.Reset()
@@ -1136,6 +1221,10 @@ func (c *MemChunk) Rebound(start, end time.Time, filter filter.Func) (Chunk, err
 	}
 
 	return newChunk, nil
+}
+
+func (c *MemChunk) Samples() []chunk.Sample {
+	return c.samples
 }
 
 // encBlock is an internal wrapper for a block, mainly to avoid binding an encoding in a block itself.

@@ -231,7 +231,7 @@ func createChunk(t testing.TB, userID string, lbs labels.Labels, from model.Time
 	}
 
 	require.NoError(t, chunkEnc.Close())
-	c := chunk.NewChunk(userID, fp, metric, chunkenc.NewFacade(chunkEnc, blockSize, targetSize), from, through)
+	c := chunk.NewChunk(userID, fp, metric, chunkenc.NewFacade(chunkEnc, blockSize, targetSize), from, through, []chunk.Sample{})
 	require.NoError(t, c.Encode())
 	return c
 }

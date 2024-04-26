@@ -46,12 +46,27 @@ type Chunk struct {
 	Encoding Encoding `json:"encoding"`
 	Data     Data     `json:"-"`
 
+	Samples []Sample `json:"samples"`
+
 	// The encoded version of the chunk, held so we don't need to re-encode it
 	encoded []byte
 }
 
+type Sample struct {
+	Timestamp int64  `json:"timestamp"`
+	KB        uint32 `json:"kb"`
+	Entries   uint32 `json:"entries"`
+}
+
 // NewChunk creates a new chunk
-func NewChunk(userID string, fp model.Fingerprint, metric labels.Labels, c Data, from, through model.Time) Chunk {
+func NewChunk(
+	userID string,
+	fp model.Fingerprint,
+	metric labels.Labels,
+	c Data,
+	from, through model.Time,
+	samples []Sample,
+) Chunk {
 	return Chunk{
 		ChunkRef: logproto.ChunkRef{
 			Fingerprint: uint64(fp),
@@ -61,6 +76,7 @@ func NewChunk(userID string, fp model.Fingerprint, metric labels.Labels, c Data,
 		},
 		Metric:   metric,
 		Encoding: c.Encoding(),
+		Samples:  samples,
 		Data:     c,
 	}
 }

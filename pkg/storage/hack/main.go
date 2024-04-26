@@ -113,7 +113,7 @@ func fillStore(cm storage.ClientMetrics) error {
 					_ = chunkEnc.Append(entry)
 				} else {
 					from, to := chunkEnc.Bounds()
-					c := chunk.NewChunk("fake", fp, metric, chunkenc.NewFacade(chunkEnc, 0, 0), model.TimeFromUnixNano(from.UnixNano()), model.TimeFromUnixNano(to.UnixNano()))
+					c := chunk.NewChunk("fake", fp, metric, chunkenc.NewFacade(chunkEnc, 0, 0), model.TimeFromUnixNano(from.UnixNano()), model.TimeFromUnixNano(to.UnixNano()), []chunk.Sample{})
 					if err := c.Encode(); err != nil {
 						panic(err)
 					}
