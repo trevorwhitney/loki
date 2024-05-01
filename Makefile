@@ -10,7 +10,7 @@ help:
 .PHONY: docker-driver docker-driver-clean docker-driver-enable docker-driver-push
 .PHONY: fluent-bit-image, fluent-bit-push, fluent-bit-test
 .PHONY: fluentd-image, fluentd-push, fluentd-test
-.PHONY: push-images push-latest save-images load-images promtail-image loki-image build-image build-image-push
+.PHONY: push-images push-latest save-images load-images promtail-image loki-image loki-image-push build-image build-image-push
 .PHONY: bigtable-backup, push-bigtable-backup
 .PHONY: benchmark-store, drone, check-drone-drift, check-mod
 .PHONY: migrate migrate-image lint-markdown ragel
@@ -610,6 +610,9 @@ loki-image: ## build the loki docker image
 	$(SUDO) docker build -t $(IMAGE_PREFIX)/loki:$(IMAGE_TAG) -f cmd/loki/Dockerfile .
 loki-image-cross:
 	$(SUDO) $(BUILD_OCI) -t $(IMAGE_PREFIX)/loki:$(IMAGE_TAG) -f cmd/loki/Dockerfile.cross .
+loki-image-push: ensure-buildx-builder
+	DOCKER_BUILDKIT=$(DOCKER_BUILDKIT) docker buildx build $(OCI_PLATFORMS) --build-arg $(BUILD_IMAGE) \
+									-o type=registry -t $(IMAGE_PREFIX)/loki:$(IMAGE_TAG) -f cmd/loki/Dockerfile .
 
 loki-debug-image: ## build the debug loki docker image
 	$(SUDO) $(BUILD_OCI) -t $(IMAGE_PREFIX)/loki:$(IMAGE_TAG)-debug -f cmd/loki/Dockerfile.debug .

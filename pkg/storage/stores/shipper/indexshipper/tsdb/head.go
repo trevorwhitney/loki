@@ -158,6 +158,7 @@ func updateMintMaxt(mint, maxt int64, mintSrc, maxtSrc *atomic.Int64) {
 	}
 }
 
+//TODO(twhitney): How are we handling samples here?
 // Note: chks must not be nil or zero-length
 func (h *Head) Append(ls labels.Labels, fprint uint64, chks index.ChunkMetas) (created bool, refID uint64) {
 	from, through := chks.Bounds()
@@ -252,6 +253,7 @@ func (s *stripeSeries) getByID(id uint64) *memSeries {
 	return x.m[id]
 }
 
+//TODO(twhitney): how are we handling samples here?
 // Append adds chunks to the correct series and returns whether a new series was added
 func (s *stripeSeries) Append(
 	ls labels.Labels,
@@ -284,6 +286,7 @@ func (s *stripeSeries) Append(
 	return
 }
 
+//TODO(twhitney): memSeries has chunkmetas
 type memSeries struct {
 	sync.RWMutex
 	ref  uint64 // The unique reference within a *Head

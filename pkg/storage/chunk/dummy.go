@@ -52,3 +52,7 @@ func (chk *dummyChunk) Entries() int {
 func (chk *dummyChunk) Utilization() float64 {
 	return 0
 }
+
+func (chk *dummyChunk) MetadataSamples() Samples {
+	return []Sample{}
+}

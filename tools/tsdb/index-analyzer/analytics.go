@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"time"
 
 	"github.com/prometheus/common/model"
 	"github.com/prometheus/prometheus/model/labels"
@@ -14,7 +15,6 @@ import (
 )
 
 func analyze(indexShipper indexshipper.IndexShipper, tableName string, tenants []string) error {
-
 	var (
 		series             int
 		chunks             int
@@ -46,7 +46,6 @@ func analyze(indexShipper indexshipper.IndexShipper, tableName string, tenants [
 					seriesRes, nil,
 					labels.MustNewMatcher(labels.MatchEqual, "", ""),
 				)
-
 				if err != nil {
 					return err
 				}
@@ -61,7 +60,6 @@ func analyze(indexShipper indexshipper.IndexShipper, tableName string, tenants [
 					chunkRes, nil,
 					labels.MustNewMatcher(labels.MatchEqual, "", ""),
 				)
-
 				if err != nil {
 					return err
 				}
@@ -74,6 +72,26 @@ func analyze(indexShipper indexshipper.IndexShipper, tableName string, tenants [
 					model.Earliest,
 					model.Latest,
 					func(ls labels.Labels, fp model.Fingerprint, chks []tsdb_index.ChunkMeta) (stop bool) {
+						for _, chk := range chks {
+							from := time.UnixMilli(chk.MinTime)
+							to := time.UnixMilli(chk.MaxTime)
+							fmt.Printf("from: %s, to: %s\n", from.Format("2006-01-02T15:04:05"), to.Format("2006-01-02T15:04:05"))
+
+							expected := (chk.MaxTime - chk.MinTime) / (10 * time.Second).Milliseconds()
+							var maxKB, maxEntries uint32
+							for _, s := range chk.Samples {
+								if s.KB > maxKB {
+									maxKB = s.KB
+								}
+								if s.Entries > maxEntries {
+									maxEntries = s.Entries
+								}
+							}
+
+							fmt.Printf("series: %v, entries: %d, bytes: %d\n", ls, chk.Entries, chk.KB)
+							fmt.Printf("expected %d samples, found %d\n", expected, len(chk.Samples))
+							fmt.Printf("max entries: %d, max bytes: %d\n", maxEntries, maxKB)
+						}
 						if len(chks) > maxChunksPerSeries {
 							maxChunksPerSeries = len(chks)
 							if len(chks) > 1000 {
@@ -92,7 +110,6 @@ func analyze(indexShipper indexshipper.IndexShipper, tableName string, tenants [
 				return nil
 			}),
 		)
-
 		if err != nil {
 			return err
 		}

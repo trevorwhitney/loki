@@ -8,6 +8,7 @@ import (
 	"hash"
 	"hash/crc32"
 	"io"
+	"math"
 	"reflect"
 	"time"
 	"unsafe"
@@ -137,6 +138,9 @@ type MemChunk struct {
 
 	// compressed size of chunk. Set when chunk is cut or while decoding chunk from storage.
 	compressedSize int
+
+	lastSampledAt int64
+	samples       chunk.Samples
 }
 
 type block struct {
@@ -384,6 +388,8 @@ func newMemChunkWithFormat(format byte, enc Encoding, head HeadBlockFmt, blockSi
 		encoding:   enc,
 		headFmt:    head,
 		symbolizer: symbolizer,
+
+		samples: chunk.Samples{},
 	}
 }
 
@@ -399,6 +405,8 @@ func newByteChunk(b []byte, blockSize, targetSize int, fromCheckpoint bool) (*Me
 		targetSize:     targetSize,
 		symbolizer:     newSymbolizer(),
 		compressedSize: len(b),
+
+		samples: chunk.Samples{},
 	}
 	db := decbuf{b: b}
 
@@ -1138,6 +1146,34 @@ func (c *MemChunk) Rebound(start, end time.Time, filter filter.Func) (Chunk, err
 	return newChunk, nil
 }
 
+func (c *MemChunk) MetadataSamples() chunk.Samples {
+	return c.samples
+}
+
+func (c *MemChunk) SampleMetadata() (uint32, uint32) {
+	_, to := c.Bounds()
+	approxKB := uint32(math.Round(float64(c.UncompressedSize()) / float64(1<<10)))
+	entries := uint32(c.Size())
+
+	sample := chunk.Sample{
+		Timestamp: to.UnixMilli(),
+		KB:        approxKB,
+		Entries:   entries,
+	}
+
+  //TODO(twhitney): not sure if this logic is correct? Do we want to guard
+  // against recording that the data hasn't changed?
+  // it will save samples in the index, so I guess we can infer that it hasn't changed, which is
+  // thoe motivation. We can clean/fill at query time.
+	if sample.Timestamp <= c.lastSampledAt {
+		return 0, 0
+	}
+
+	c.samples = append(c.samples, sample)
+	c.lastSampledAt = sample.Timestamp
+	return approxKB, entries
+}
+
 // encBlock is an internal wrapper for a block, mainly to avoid binding an encoding in a block itself.
 // This may seem roundabout, but the encoding is already a field on the parent MemChunk type. encBlock
 // then allows us to bind a decoding context to a block when requested, but otherwise helps reduce the
@@ -1186,8 +1222,8 @@ func (hb *headBlock) Iterator(ctx context.Context, direction logproto.Direction,
 
 	stats := stats.FromContext(ctx)
 
-	// We are doing a copy everytime, this is because b.entries could change completely,
-	// the alternate would be that we allocate a new b.entries everytime we cut a block,
+	// We are doing a copy every time, this is because b.entries could change completely,
+	// the alternate would be that we allocate a new b.entries every time we cut a block,
 	// but the tradeoff is that queries to near-realtime data would be much lower than
 	// cutting of blocks.
 	stats.AddHeadChunkLines(int64(len(hb.entries)))

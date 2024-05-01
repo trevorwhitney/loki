@@ -116,6 +116,10 @@ type Config struct {
 	MaxDroppedStreams int `yaml:"max_dropped_streams"`
 
 	ShutdownMarkerPath string `yaml:"shutdown_marker_path"`
+
+	SamplePeriod        time.Duration `yaml:"sample_period"`
+	ConcurrentSamplings int           `yaml:"concurrent_samplings"`
+	SampleOpTimeout     time.Duration `yaml:"sample_op_timeout"`
 }
 
 // RegisterFlags registers the flags.
@@ -140,6 +144,9 @@ func (cfg *Config) RegisterFlags(f *flag.FlagSet) {
 	f.IntVar(&cfg.IndexShards, "ingester.index-shards", index.DefaultIndexShards, "Shard factor used in the ingesters for the in process reverse index. This MUST be evenly divisible by ALL schema shard factors or Loki will not start.")
 	f.IntVar(&cfg.MaxDroppedStreams, "ingester.tailer.max-dropped-streams", 10, "Maximum number of dropped streams to keep in memory during tailing.")
 	f.StringVar(&cfg.ShutdownMarkerPath, "ingester.shutdown-marker-path", "", "Path where the shutdown marker file is stored. If not set and common.path_prefix is set then common.path_prefix will be used.")
+	f.DurationVar(&cfg.SamplePeriod, "ingester.sample-period", 10*time.Minute, "How often should the ingester sample in memory streams for metadata statistics such as entry and byte count. The first sample is delayed by a random time up to 0.8x the flush check period. Additionally, there is +/- 5% jitter added to the interval.")
+	f.IntVar(&cfg.ConcurrentSamplings, "ingester.concurrent-samplings", 32, "How many smaplings can happen concurrently from each stream.")
+	f.DurationVar(&cfg.SampleOpTimeout, "ingester.sample-op-timeout", 5*time.Minute, "The timeout before a sampling is cancelled.")
 }
 
 func (cfg *Config) Validate() error {
@@ -218,6 +225,11 @@ type Ingester struct {
 	flushQueues     []*util.PriorityQueue
 	flushQueuesDone sync.WaitGroup
 
+	// One queue per sampling thread.  Fingerprint is used to
+	// pick a queue.
+	samplingQueues     []*util.PriorityQueue
+	samplingQueuesDone sync.WaitGroup
+
 	limiter *Limiter
 
 	// Denotes whether the ingester should flush on shutdown.
@@ -267,6 +279,7 @@ func New(cfg Config, clientConfig client.Config, store Store, limits Limits, con
 		periodicConfigs:       store.GetSchemaConfigs(),
 		loopQuit:              make(chan struct{}),
 		flushQueues:           make([]*util.PriorityQueue, cfg.ConcurrentFlushes),
+		samplingQueues:        make([]*util.PriorityQueue, cfg.ConcurrentSamplings),
 		tailersQuit:           make(chan struct{}),
 		metrics:               metrics,
 		flushOnShutdownSwitch: &OnceSwitch{},
@@ -382,7 +395,7 @@ func (i *Ingester) setupAutoForget() {
 				}
 
 				if len(forgetList) == len(ringDesc.Ingesters)-1 {
-					level.Warn(i.logger).Log("msg", fmt.Sprintf("autoforget have seen %d unhealthy ingesters out of %d, network may be partioned, skip forgeting ingesters this round", len(forgetList), len(ringDesc.Ingesters)))
+					level.Warn(i.logger).Log("msg", fmt.Sprintf("autoforget have seen %d unhealthy ingesters out of %d, network may be partitioned, skip forgeting ingesters this round", len(forgetList), len(ringDesc.Ingesters)))
 					forgetList = forgetList[:0]
 					return nil, false, nil
 				}
@@ -492,6 +505,7 @@ func (i *Ingester) starting(ctx context.Context) error {
 	}
 
 	i.InitFlushQueues()
+	i.InitSamplingQueues()
 
 	// pass new context to lifecycler, so that it doesn't stop automatically when Ingester's service context is done
 	err := i.lifecycler.StartAsync(context.Background())
@@ -626,10 +640,17 @@ func (i *Ingester) loop() {
 	flushTicker := util.NewTickerWithJitter(i.cfg.FlushCheckPeriod, j)
 	defer flushTicker.Stop()
 
+	sampleTicker := time.NewTimer(i.cfg.SamplePeriod)
+	defer sampleTicker.Stop()
+
 	for {
 		select {
 		case <-flushTicker.C:
 			i.sweepUsers(false, true)
+
+		case <-sampleTicker.C:
+			sampleTicker.Reset(i.cfg.SamplePeriod)
+			i.sampleUsers()
 
 		case <-i.loopQuit:
 			return

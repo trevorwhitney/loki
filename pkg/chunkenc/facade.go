@@ -128,3 +128,7 @@ func UncompressedSize(c chunk.Data) (int, bool) {
 
 	return f.c.UncompressedSize(), true
 }
+
+func (f Facade) MetadataSamples() chunk.Samples {
+	return f.c.MetadataSamples()
+}

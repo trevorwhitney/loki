@@ -1,6 +1,7 @@
 package index
 
 import (
+	"slices"
 	"sort"
 
 	"github.com/prometheus/common/model"
@@ -8,6 +9,47 @@ import (
 	"github.com/grafana/loki/v3/pkg/util"
 	"github.com/grafana/loki/v3/pkg/util/encoding"
 )
+
+type Sample struct {
+	Timestamp int64
+	KB        uint32
+	Entries   uint32
+}
+
+type Samples []Sample
+
+// TODO(twhitney): How often is this run, and is this the best way to do this?
+// TODO(twhitney): Move sorting to Finalize. This is called in Drop and assumes ChunkMetas have already
+// ben sorted by Finalize. So we should just sort samples in finalize.
+func (d *Samples) Equals(other Samples) bool {
+	if len(*d) != len(other) {
+		return false
+	}
+
+	sortFunc := func(i, j Sample) int {
+		if i.Timestamp < j.Timestamp {
+			return -1
+		}
+
+		if i.Timestamp > j.Timestamp {
+			return 1
+		}
+
+		return 0
+	}
+
+	slices.SortFunc(*d, sortFunc)
+	slices.SortFunc(other, sortFunc)
+
+	for i, v := range *d {
+		if other[i].Timestamp != v.Timestamp || other[i].KB != v.KB ||
+			other[i].Entries != v.Entries {
+			return false
+		}
+	}
+
+	return true
+}
 
 // Meta holds information about a chunk of data.
 type ChunkMeta struct {
@@ -19,11 +61,26 @@ type ChunkMeta struct {
 	KB uint32
 
 	Entries uint32
+
+	// TODO(twhitney): this is where we need to be storing samples, and only here
+	Samples Samples
 }
 
 func (c ChunkMeta) From() model.Time                 { return model.Time(c.MinTime) }
 func (c ChunkMeta) Through() model.Time              { return model.Time(c.MaxTime) }
 func (c ChunkMeta) Bounds() (model.Time, model.Time) { return c.From(), c.Through() }
+func (c ChunkMeta) Equals(other ChunkMeta) bool {
+	if c.Checksum != other.Checksum ||
+		c.MinTime != other.MinTime ||
+		c.MaxTime != other.MaxTime ||
+		c.KB != other.KB ||
+		c.Entries != other.Entries ||
+		!c.Samples.Equals(other.Samples) {
+		return false
+	}
+
+	return true
+}
 
 type ChunkMetas []ChunkMeta
 
@@ -102,7 +159,6 @@ func (c ChunkMetas) Finalize() ChunkMetas {
 	// release self to pool; res will be returned instead
 	ChunkMetasPool.Put(c)
 	return res
-
 }
 
 // Add adds ChunkMeta at the right place in order. It assumes existing ChunkMetas have already been sorted by using Finalize.
@@ -151,7 +207,7 @@ func (c ChunkMetas) Drop(chk ChunkMeta) (ChunkMetas, bool) {
 		return ichk.Checksum >= chk.Checksum
 	})
 
-	if j >= len(c) || c[j] != chk {
+	if j >= len(c) || !c[j].Equals(chk) {
 		return c, false
 	}
 
@@ -169,6 +225,10 @@ type chunkPageMarker struct {
 	// KB, Entries denote the KB and number of entries
 	// in each page
 	KB, Entries uint32
+
+	// Samples are the sampled KB and bytes at specified
+	// sampling intervals for each page
+	Samples Samples
 
 	// byte offset where this chunk starts relative
 	// to the chunks in this series
@@ -196,6 +256,12 @@ func (m *chunkPageMarker) combine(c ChunkMeta) {
 	}
 	if c.MaxTime > m.MaxTime {
 		m.MaxTime = c.MaxTime
+	}
+
+	for _, s := range c.Samples {
+		if s.Timestamp >= m.MinTime && s.Timestamp < m.MaxTime {
+			m.Samples = append(m.Samples, s)
+		}
 	}
 }
 
@@ -236,17 +302,27 @@ type chunkPageMarkers []chunkPageMarker
 
 type ChunkStats struct {
 	Chunks, KB, Entries uint64
+	Samples             Samples
 }
 
-func (cs *ChunkStats) addRaw(chunks int, kb, entries uint32) {
+func (cs *ChunkStats) addRaw(chunks int, kb, entries uint32, samples Samples) {
 	cs.Chunks += uint64(chunks)
 	cs.KB += uint64(kb)
 	cs.Entries += uint64(entries)
+	cs.Samples = append(cs.Samples, samples...)
 }
 
 func (cs *ChunkStats) AddChunk(chk *ChunkMeta, from, through int64) {
 	factor := util.GetFactorOfTime(from, through, chk.MinTime, chk.MaxTime)
 	kb := uint32(float64(chk.KB) * factor)
 	entries := uint32(float64(chk.Entries) * factor)
-	cs.addRaw(1, kb, entries)
+
+	samples := make(Samples, 0, len(chk.Samples))
+	for _, s := range chk.Samples {
+		if s.Timestamp >= from && s.Timestamp < through {
+			samples = append(samples, s)
+		}
+	}
+
+	cs.addRaw(1, kb, entries, samples)
 }

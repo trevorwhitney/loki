@@ -845,8 +845,8 @@ func TestQuerier_isWithinIngesterMaxLookbackPeriod(t *testing.T) {
 			}}
 
 			lookbackPeriod := querier.calculateIngesterMaxLookbackPeriod()
-			assert.Equal(t, tc.overlappingWithinRange, querier.isWithinIngesterMaxLookbackPeriod(lookbackPeriod, overlappingQuery.end))
-			assert.Equal(t, tc.nonOverlappingWithinRange, querier.isWithinIngesterMaxLookbackPeriod(lookbackPeriod, nonOverlappingQuery.end))
+			assert.Equal(t, tc.overlappingWithinRange, querier.isWithinIngesterMaxLookbackPeriod(lookbackPeriod, overlappingQuery.end, false))
+			assert.Equal(t, tc.nonOverlappingWithinRange, querier.isWithinIngesterMaxLookbackPeriod(lookbackPeriod, nonOverlappingQuery.end, false))
 		})
 	}
 }

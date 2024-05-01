@@ -84,6 +84,7 @@ func (r *WALRecord) encodeSeriesWithFingerprint(b []byte) []byte {
 	return encoded
 }
 
+// TODO(twhitney): this appears to be encoding metas only?
 func (r *WALRecord) encodeChunks(b []byte) []byte {
 	buf := encoding.EncWith(b)
 	buf.PutByte(byte(WalRecordChunks))
@@ -97,6 +98,13 @@ func (r *WALRecord) encodeChunks(b []byte) []byte {
 		buf.PutBE32(chk.Checksum)
 		buf.PutBE32(chk.KB)
 		buf.PutBE32(chk.Entries)
+
+		buf.PutUvarint(len(chk.Samples))
+		for _, s := range chk.Samples {
+			buf.PutBE64(uint64(s.Timestamp))
+			buf.PutBE32(s.KB)
+			buf.PutBE32(s.Entries)
+		}
 	}
 
 	return buf.Get()
@@ -122,12 +130,32 @@ func decodeChunks(b []byte, rec *WALRecord) error {
 	rec.Chks.Chks = make(index.ChunkMetas, 0, ln)
 
 	for len(dec.B) > 0 && dec.Err() == nil {
+		minTime := dec.Be64int64()
+		maxTime := dec.Be64int64()
+		checksum := dec.Be32()
+		kb := dec.Be32()
+		entries := dec.Be32()
+
+		samplesLen := dec.Uvarint()
+		samples := make(index.Samples, samplesLen)
+		for i := 0; i < samplesLen && len(dec.B) > 0 && dec.Err() == nil; i++ {
+			timestamp := dec.Be64int64()
+			kb := dec.Be32()
+			entries := dec.Be32()
+			samples[i] = index.Sample{
+				Timestamp: timestamp,
+				KB:        kb,
+				Entries:   entries,
+			}
+		}
+
 		rec.Chks.Chks = append(rec.Chks.Chks, index.ChunkMeta{
-			MinTime:  dec.Be64int64(),
-			MaxTime:  dec.Be64int64(),
-			Checksum: dec.Be32(),
-			KB:       dec.Be32(),
-			Entries:  dec.Be32(),
+			MinTime:  minTime,
+			MaxTime:  maxTime,
+			Checksum: checksum,
+			KB:       kb,
+			Entries:  entries,
+			Samples:  samples,
 		})
 	}
 

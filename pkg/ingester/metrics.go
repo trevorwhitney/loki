@@ -65,6 +65,7 @@ type ingesterMetrics struct {
 	shutdownMarker prometheus.Gauge
 
 	flushQueueLength prometheus.Gauge
+	samplingQueueLength prometheus.Gauge
 }
 
 // setRecoveryBytesInUse bounds the bytes reports to >= 0.
@@ -286,6 +287,13 @@ func newIngesterMetrics(r prometheus.Registerer, metricsNamespace string) *inges
 			Subsystem: "ingester",
 			Name:      "flush_queue_length",
 			Help:      "The total number of series pending in the flush queue.",
+		}),
+
+		samplingQueueLength: promauto.With(r).NewGauge(prometheus.GaugeOpts{
+			Namespace: metricsNamespace,
+			Subsystem: "ingester",
+			Name:      "sampling_queue_length",
+			Help:      "The total number of series pending in the sampling queue.",
 		}),
 	}
 }

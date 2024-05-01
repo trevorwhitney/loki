@@ -275,10 +275,14 @@ func (q *SingleTenantQuerier) deletesForUser(ctx context.Context, startT, endT t
 	return deletes, nil
 }
 
-func (q *SingleTenantQuerier) isWithinIngesterMaxLookbackPeriod(maxLookback time.Duration, queryEnd time.Time) bool {
+func (q *SingleTenantQuerier) isWithinIngesterMaxLookbackPeriod(maxLookback time.Duration, queryEnd time.Time, queryStoreOnly bool) bool {
 	// if no lookback limits are configured, always consider this within the range of the lookback period
 	if maxLookback <= 0 {
 		return true
+	}
+
+	if queryStoreOnly {
+		return false
 	}
 
 	// find the first instance that we would want to query the ingester from...
@@ -327,7 +331,7 @@ func (q *SingleTenantQuerier) buildQueryIntervals(queryStart, queryEnd time.Time
 		return i, i
 	}
 
-	ingesterQueryWithinRange := q.isWithinIngesterMaxLookbackPeriod(ingesterMLB, queryEnd)
+	ingesterQueryWithinRange := q.isWithinIngesterMaxLookbackPeriod(ingesterMLB, queryEnd, q.cfg.QueryStoreOnly)
 
 	// see if there is an overlap between ingester query interval and actual query interval, if not just do the store query.
 	if !ingesterQueryWithinRange {

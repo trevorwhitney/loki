@@ -25,6 +25,7 @@ cmd/querytee/querytee
 /promtail
 /logcli
 /loki-canary
+/index-analyzer
 dlv
 rootfs/
 dist

@@ -57,7 +57,17 @@ type Data interface {
 	// Entries returns the number of entries in a chunk
 	Entries() int
 	Utilization() float64
+	MetadataSamples() Samples
 }
+
+type Sample struct {
+	Timestamp int64  `json:"timestamp"`
+	KB        uint32 `json:"kb"`
+	Entries   uint32 `json:"entries"`
+}
+
+type Samples []Sample
+
 
 // RequestChunkFilterer creates ChunkFilterer for a given request context.
 type RequestChunkFilterer interface {

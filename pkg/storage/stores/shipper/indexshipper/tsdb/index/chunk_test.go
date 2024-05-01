@@ -453,7 +453,6 @@ func TestChunkEncodingRoundTrip(t *testing.T) {
 				})
 			}
 		}
-
 	}
 }
 
@@ -592,12 +591,11 @@ func TestSearchWithPageMarkers(t *testing.T) {
 				decbuf := encoding.DecWrap(tsdb_enc.Decbuf{B: primary.Get()})
 				dec := newDecoder(nil, 0)
 				dst := []ChunkMeta{}
-				require.Nil(t, dec.readChunksV3(&decbuf, tc.mint, tc.maxt, &dst))
+				require.Nil(t, dec.readChunksV3(&decbuf, tc.mint, tc.maxt, &dst, FormatV3))
 				require.Equal(t, tc.exp, dst)
 			})
 		}
 	}
-
 }
 
 func TestDecoderChunkStats(t *testing.T) {
@@ -762,5 +760,4 @@ func BenchmarkReadChunks(b *testing.B) {
 			})
 		}
 	}
-
 }

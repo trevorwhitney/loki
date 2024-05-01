@@ -8,10 +8,11 @@ import (
 	"strings"
 	"time"
 
-	"github.com/grafana/loki/v3/pkg/iter"
-	"github.com/grafana/loki/v3/pkg/logproto"
-	"github.com/grafana/loki/v3/pkg/logql/log"
-	"github.com/grafana/loki/v3/pkg/util/filter"
+	"github.com/grafana/loki/pkg/iter"
+	"github.com/grafana/loki/pkg/logproto"
+	"github.com/grafana/loki/pkg/logql/log"
+	"github.com/grafana/loki/pkg/storage/chunk"
+	"github.com/grafana/loki/pkg/util/filter"
 )
 
 // Errors returned by the chunk interface.
@@ -93,7 +94,7 @@ func (e Encoding) String() string {
 	case EncSnappy:
 		return "snappy"
 	case EncFlate:
-		return "flate"
+		return "flat"
 	case EncZstd:
 		return "zstd"
 	default:
@@ -109,7 +110,6 @@ func ParseEncoding(enc string) (Encoding, error) {
 		}
 	}
 	return 0, fmt.Errorf("invalid encoding: %s, supported: %s", enc, SupportedEncoding())
-
 }
 
 // SupportedEncoding returns the list of supported Encoding.
@@ -145,6 +145,7 @@ type Chunk interface {
 	Close() error
 	Encoding() Encoding
 	Rebound(start, end time.Time, filter filter.Func) (Chunk, error)
+	MetadataSamples() chunk.Samples
 }
 
 // Block is a chunk block.

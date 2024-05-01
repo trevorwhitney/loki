@@ -26,7 +26,8 @@ import (
 const (
 	// Backoff for retrying 'immediate' flushes. Only counts for queue
 	// position, not wallclock time.
-	flushBackoff = 1 * time.Second
+	flushBackoff  = 1 * time.Second
+	sampleBackoff = 5 * time.Second
 
 	nameLabel = "__name__"
 	logsValue = "logs"
@@ -48,20 +49,30 @@ func (i *Ingester) InitFlushQueues() {
 	}
 }
 
+func (i *Ingester) InitSamplingQueues() {
+	i.samplingQueuesDone.Add(i.cfg.ConcurrentSamplings)
+	for j := 0; j < i.cfg.ConcurrentSamplings; j++ {
+		i.samplingQueues[j] = util.NewPriorityQueue(i.metrics.samplingQueueLength)
+		go i.sampleLoop(j)
+	}
+}
+
 // Flush implements ring.FlushTransferer
 // Flush triggers a flush of all the chunks and closes the flush queues.
 // Called from the Lifecycler as part of the ingester shutdown.
 func (i *Ingester) Flush() {
+	i.drainSamplingQueues()
 	i.flush(true)
 }
 
 // TransferOut implements ring.FlushTransferer
-// Noop implemenetation because ingesters have a WAL now that does not require transferring chunks any more.
+// Noop implementation because ingesters have a WAL now that does not require transferring chunks any more.
 // We return ErrTransferDisabled to indicate that we don't support transfers, and therefore we may flush on shutdown if configured to do so.
 func (i *Ingester) TransferOut(_ context.Context) error {
 	return ring.ErrTransferDisabled
 }
 
+// TODO(twhitney): Do I need to drain sampling queues?
 func (i *Ingester) flush(mayRemoveStreams bool) {
 	i.sweepUsers(true, mayRemoveStreams)
 
@@ -72,6 +83,16 @@ func (i *Ingester) flush(mayRemoveStreams bool) {
 
 	i.flushQueuesDone.Wait()
 	level.Debug(i.logger).Log("msg", "flush queues have drained")
+}
+
+func (i *Ingester) drainSamplingQueues() {
+	// Close the sampling queues, to unblock waiting workers.
+	for _, samplingQueue := range i.samplingQueues {
+		samplingQueue.Close()
+	}
+
+	i.samplingQueuesDone.Wait()
+	level.Debug(i.logger).Log("msg", "sampling queues have drained")
 }
 
 // FlushHandler triggers a flush of all in memory chunks.  Mainly used for
@@ -93,6 +114,21 @@ func (o *flushOp) Key() string {
 }
 
 func (o *flushOp) Priority() int64 {
+	return -int64(o.from)
+}
+
+// TODO(twhitney): do we need the from or immediate fields?
+type sampleOp struct {
+	from   model.Time
+	userID string
+	fp     model.Fingerprint
+}
+
+func (o *sampleOp) Key() string {
+	return fmt.Sprintf("%s-%s", o.userID, o.fp)
+}
+
+func (o *sampleOp) Priority() int64 {
 	return -int64(o.from)
 }
 
@@ -412,4 +448,113 @@ func (i *Ingester) reportFlushedChunkStatistics(ch *chunk.Chunk, desc *chunkDesc
 	i.metrics.flushedChunksUtilizationStats.Record(utilization)
 	i.metrics.flushedChunksAgeStats.Record(time.Since(boundsFrom).Seconds())
 	i.metrics.flushedChunksLifespanStats.Record(boundsTo.Sub(boundsFrom).Seconds())
+}
+
+func (i *Ingester) sampleLoop(j int) {
+	defer func() {
+		level.Debug(i.logger).Log("msg", "Ingester.sampleLoop() exited")
+		i.samplingQueuesDone.Done()
+	}()
+
+	for {
+		o := i.samplingQueues[j].Dequeue()
+		if o == nil {
+			return
+		}
+		op := o.(*sampleOp)
+
+		err := i.sampleUserSeries(op.userID, op.fp)
+		if err != nil {
+			level.Error(util_log.WithUserID(op.userID, i.logger)).
+				Log("msg", "failed to sample", "err", err)
+		}
+
+		// If we're exiting & we failed to sample, put the failed operation
+		// back in the queue at a later point.
+		if err != nil {
+			op.from = op.from.Add(flushBackoff)
+			i.samplingQueues[j].Enqueue(op)
+		}
+	}
+}
+
+func (i *Ingester) sampleUserSeries(userID string, fp model.Fingerprint) error {
+	instance, ok := i.getInstanceByID(userID)
+	if !ok {
+		return nil
+	}
+
+	ctx := user.InjectOrgID(context.Background(), userID)
+	ctx, cancel := context.WithTimeout(ctx, i.cfg.SampleOpTimeout)
+	defer cancel()
+	entries, bytes, labels := i.sampleChunks(instance, fp)
+
+	lbs := labels.String()
+	level.Info(i.logger).
+		Log("msg", "sampling stream", "user", userID, "fp", fp, "entries", entries, "bytes", bytes, "labels", lbs)
+
+	return nil
+}
+
+func (i *Ingester) sampleChunks(
+	instance *instance,
+	fp model.Fingerprint,
+) (uint32, uint32, labels.Labels) {
+	var stream *stream
+	var ok bool
+	stream, ok = instance.streams.LoadByFP(fp)
+
+	if !ok {
+		return 0, 0, nil
+	}
+
+	stream.chunkMtx.Lock()
+	defer stream.chunkMtx.Unlock()
+
+	total := uint32(0)
+	totalBytes := uint32(0)
+	for _, chunk := range stream.chunks {
+
+		// Don't sample already closed chunks
+		if chunk.closed {
+			continue
+		}
+
+		entries, bytes := chunk.chunk.SampleMetadata()
+		total += entries
+		totalBytes += bytes
+	}
+
+	return total, totalBytes, stream.labels
+}
+
+func (i *Ingester) sampleUsers() {
+	instances := i.getInstances()
+
+	for _, instance := range instances {
+		i.sampleInstance(instance)
+	}
+}
+
+func (i *Ingester) sampleInstance(instance *instance) {
+	_ = instance.streams.ForEach(func(s *stream) (bool, error) {
+		i.sampleStream(instance, s)
+		return true, nil
+	})
+}
+
+func (i *Ingester) sampleStream(instance *instance, stream *stream) {
+	stream.chunkMtx.RLock()
+	defer stream.chunkMtx.RUnlock()
+	if len(stream.chunks) == 0 {
+		return
+	}
+
+	sampleQueueIndex := int(uint64(stream.fp) % uint64(i.cfg.ConcurrentSamplings))
+	firstTime, _ := stream.chunks[0].chunk.Bounds()
+	i.samplingQueues[sampleQueueIndex].Enqueue(&sampleOp{
+		model.TimeFromUnixNano(firstTime.UnixNano()),
+		instance.instanceID,
+		stream.fp,
+	})
 }

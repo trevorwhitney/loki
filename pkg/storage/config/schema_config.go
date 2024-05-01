@@ -439,8 +439,10 @@ func (cfg *PeriodConfig) TSDBFormat() (int, error) {
 	switch {
 	case sver <= 12:
 		return index.FormatV2, nil
-	default: // for v13 and above
+  case sver == 13:
 		return index.FormatV3, nil
+	default: // for v14 and above
+    return index.FormatV4, nil
 	}
 }
 
@@ -469,7 +471,7 @@ func (cfg PeriodConfig) validate() error {
 	}
 
 	switch v {
-	case 10, 11, 12, 13:
+	case 10, 11, 12, 13, 14:
 		if cfg.RowShards == 0 {
 			return fmt.Errorf("must have row_shards > 0 (current: %d) for schema (%s)", cfg.RowShards, cfg.Schema)
 		}

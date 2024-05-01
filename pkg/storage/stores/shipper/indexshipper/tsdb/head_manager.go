@@ -243,6 +243,7 @@ func (m *HeadManager) Stop() error {
 	return m.buildTSDBFromHead(m.activeHeads)
 }
 
+//TODO(twhitney): Make sure we're handling samples in the chunk metas
 func (m *HeadManager) Append(userID string, ls labels.Labels, fprint uint64, chks index.ChunkMetas) error {
 	// TSDB doesnt need the __name__="log" convention the old chunk store index used.
 	// We must create a copy of the labels here to avoid mutating the existing
@@ -655,6 +656,7 @@ func newTenantHeads(start time.Time, shards int, metrics *Metrics, logger log.Lo
 	return res
 }
 
+//TODO(twhitney): put the samples in the WALRecord. Which should be happening automatically if it's in the ChunkMetas
 func (t *tenantHeads) Append(userID string, ls labels.Labels, fprint uint64, chks index.ChunkMetas) *WALRecord {
 	var mint, maxt int64
 	for _, chk := range chks {
