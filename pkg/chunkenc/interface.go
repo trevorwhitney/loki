@@ -94,7 +94,7 @@ func (e Encoding) String() string {
 	case EncSnappy:
 		return "snappy"
 	case EncFlate:
-		return "flat"
+		return "flate" // codespell:ignore flate
 	case EncZstd:
 		return "zstd"
 	default:
