@@ -366,6 +366,10 @@ func (c *client) Chan() chan<- api.Entry {
 	return c.entries
 }
 
+func (c *client) Stop() {
+	c.cancel()
+}
+
 func asSha256(o interface{}) string {
 	h := sha256.New()
 	h.Write([]byte(fmt.Sprintf("%v", o)))
