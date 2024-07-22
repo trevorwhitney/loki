@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"slices"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 
@@ -296,7 +297,7 @@ func (c *Chunk) ForTypeAndRange(
 	return aggregatedSamples, nil
 }
 
-func (c *Chunks) Downsample(now model.Time) {
+func (c *Chunks) Downsample(now model.Time, w EntryWriter) {
 	c.lock.Lock()
 	defer func() {
 		c.lock.Unlock()
@@ -311,18 +312,20 @@ func (c *Chunks) Downsample(now model.Time) {
 
 	c.metrics.samples.Inc()
 
-	if len(c.chunks) == 0 {
-		c.chunks = append(c.chunks, newChunk(totalBytes, totalCount, now))
-		c.metrics.chunks.Set(float64(len(c.chunks)))
-		return
+	lbls := make(labels.Labels, 0, len(c.labels)+1)
+	for _, l := range c.labels {
+		if l.Name == "service_name" {
+			lbls = append(lbls, labels.Label{Name: "__aggregated_metrics__", Value: l.Value})
+		} else if !strings.HasPrefix(l.Name, "__") {
+			lbls = append(lbls, l)
+		}
 	}
 
-	last := c.chunks[len(c.chunks)-1]
-	if !last.spaceFor(now) {
-		c.chunks = append(c.chunks, newChunk(totalBytes, totalCount, now))
-		c.metrics.chunks.Set(float64(len(c.chunks)))
-		return
+	if w != nil {
+		w.WriteEntry(
+			now.Time(),
+			fmt.Sprintf("ts=%d bytes=%f count=%f", now.UnixNano(), totalBytes, totalCount),
+		  lbls,
+		)
 	}
-
-	last.AddSample(newSample(totalBytes, totalCount, now))
 }

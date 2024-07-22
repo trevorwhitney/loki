@@ -40,6 +40,7 @@ type instance struct {
 	chunkMetrics   *metric.ChunkMetrics
 	aggregationCfg metric.AggregationConfig
 	drainCfg       *drain.Config
+	writer         metric.EntryWriter
 }
 
 func newInstance(instanceID string, logger log.Logger, metrics *ingesterMetrics, chunkMetrics *metric.ChunkMetrics, drainCfg *drain.Config, aggCfg metric.AggregationConfig) (*instance, error) {
@@ -59,6 +60,22 @@ func newInstance(instanceID string, logger log.Logger, metrics *ingesterMetrics,
 		drainCfg:       drainCfg,
 	}
 	i.mapper = ingester.NewFPMapper(i.getLabelsFromFingerprint)
+
+	if aggCfg.Enabled {
+		writer, err := metric.NewPush(
+			aggCfg.LokiAddr,
+			instanceID,
+			aggCfg.WriteTimeout,
+			aggCfg.HTTPClientConfig,
+			aggCfg.UseTLS,
+			&aggCfg.BackoffConfig,
+			logger,
+		)
+
+		if writer != nil && err == nil {
+			i.writer = writer
+		}
+	}
 	return i, nil
 }
 
@@ -215,7 +232,18 @@ func (i *instance) createStream(_ context.Context, pushReqStream logproto.Stream
 	fp := i.getHashForLabels(labels)
 	sortedLabels := i.index.Add(logproto.FromLabelsToLabelAdapters(labels), fp)
 	firstEntryLine := pushReqStream.Entries[0].Line
-	s, err := newStream(fp, sortedLabels, i.metrics, i.chunkMetrics, i.aggregationCfg, i.logger, drain.DetectLogFormat(firstEntryLine), i.instanceID, i.drainCfg)
+	s, err := newStream(
+		fp,
+		sortedLabels,
+		i.metrics,
+		i.chunkMetrics,
+		i.aggregationCfg,
+		i.logger,
+		drain.DetectLogFormat(firstEntryLine),
+		i.instanceID,
+		i.drainCfg,
+		i.writer,
+	)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create stream: %w", err)
 	}
