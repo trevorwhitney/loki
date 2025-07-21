@@ -5,7 +5,11 @@ import (
 	"net/http/httptest"
 	"testing"
 
+	"github.com/grafana/dskit/flagext"
+	"github.com/grafana/loki/v3/pkg/validation"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+	"gopkg.in/yaml.v2"
 )
 
 type diffConfigMock struct {
@@ -29,6 +33,16 @@ func newDefaultDiffConfigMock() *diffConfigMock {
 	}
 	c.MyNestedStruct.MyString = "string1"
 	return c
+}
+
+type mockTenantLimits map[string]*validation.Limits
+
+func (tl mockTenantLimits) TenantLimits(userID string) *validation.Limits {
+	return tl[userID]
+}
+
+func (tl mockTenantLimits) AllByUserID() map[string]*validation.Limits {
+	return tl
 }
 
 func TestConfigDiffHandler(t *testing.T) {
@@ -113,4 +127,45 @@ func TestConfigDiffHandler(t *testing.T) {
 		})
 	}
 
+}
+
+func TestTenantLimitsHandlerAllowlist(t *testing.T) {
+	limits := &validation.Limits{}
+	flagext.DefaultValues(limits)
+	tl := mockTenantLimits{"user": limits}
+	overrides, err := validation.NewOverrides(validation.Limits{}, tl)
+	require.NoError(t, err)
+
+	l := &Loki{
+		TenantLimits:          tl,
+		Overrides:             overrides,
+		TenantLimitsAllowList: nil,
+	}
+
+	req := httptest.NewRequest("GET", "http://test.com/config/tenant/v1/limits", nil)
+	req.Header.Set("X-Scope-OrgID", "user")
+	w := httptest.NewRecorder()
+	l.tenantLimitsHandler()(w, req)
+	resp := w.Result()
+	var gotAll map[string]interface{}
+	err = yaml.NewDecoder(resp.Body).Decode(&gotAll)
+	require.NoError(t, err)
+
+	expectedAll, err := limitsToAllowedMap(limits, nil)
+	require.NoError(t, err)
+	assert.Equal(t, expectedAll, gotAll)
+
+	l.TenantLimitsAllowList = []string{"max_label_name_length", "max_label_value_length"}
+	req = httptest.NewRequest("GET", "http://test.com/config/tenant/v1/limits", nil)
+	req.Header.Set("X-Scope-OrgID", "user")
+	w = httptest.NewRecorder()
+	l.tenantLimitsHandler()(w, req)
+	resp = w.Result()
+	var gotFiltered map[string]interface{}
+	err = yaml.NewDecoder(resp.Body).Decode(&gotFiltered)
+	require.NoError(t, err)
+
+	expectedFiltered, err := limitsToAllowedMap(limits, l.TenantLimitsAllowList)
+	require.NoError(t, err)
+	assert.Equal(t, expectedFiltered, gotFiltered)
 }

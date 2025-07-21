@@ -134,6 +134,8 @@ type Config struct {
 	ShutdownDelay time.Duration `yaml:"shutdown_delay"`
 
 	MetricsNamespace string `yaml:"metrics_namespace"`
+
+	TenantLimitsAllowList flagext.StringSliceCSV `yaml:"tenant_limits_allowlist"`
 }
 
 // RegisterFlags registers flag.
@@ -168,6 +170,7 @@ func (c *Config) RegisterFlags(f *flag.FlagSet) {
 	f.DurationVar(&c.ShutdownDelay, "shutdown-delay", 0, "How long to wait between SIGTERM and shutdown. After receiving SIGTERM, Loki will report 503 Service Unavailable status via /ready endpoint.")
 
 	f.StringVar(&c.MetricsNamespace, "metrics-namespace", constants.Loki, "Namespace of the metrics that in previous releases had cortex as namespace. This setting is deprecated and will be removed in the next minor release.")
+	f.Var(&c.TenantLimitsAllowList, "tenant-limits.allowlist", "comma-separated list of limits returned by /config/tenant/v1/limits")
 
 	c.registerServerFlagsWithChangedDefaultValues(f)
 	c.Common.RegisterFlags(f)
@@ -393,6 +396,7 @@ type Loki struct {
 	Overrides                 limiter.CombinedLimits
 	tenantConfigs             *runtime.TenantConfigs
 	TenantLimits              validation.TenantLimits
+	TenantLimitsAllowList     flagext.StringSliceCSV
 	distributor               *distributor.Distributor
 	ingestLimits              *limits.Service
 	ingestLimitsRing          *ring.Ring
@@ -446,10 +450,11 @@ type Loki struct {
 // New makes a new Loki.
 func New(cfg Config) (*Loki, error) {
 	loki := &Loki{
-		Cfg:                 cfg,
-		ClientMetrics:       storage.NewClientMetrics(),
-		deleteClientMetrics: deletion.NewDeleteRequestClientMetrics(prometheus.DefaultRegisterer),
-		Codec:               queryrange.DefaultCodec,
+		Cfg:                   cfg,
+		TenantLimitsAllowList: cfg.TenantLimitsAllowList,
+		ClientMetrics:         storage.NewClientMetrics(),
+		deleteClientMetrics:   deletion.NewDeleteRequestClientMetrics(prometheus.DefaultRegisterer),
+		Codec:                 queryrange.DefaultCodec,
 	}
 	analytics.Edition("oss")
 	loki.setupAuthMiddleware()
