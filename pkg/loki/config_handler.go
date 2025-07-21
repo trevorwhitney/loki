@@ -6,6 +6,7 @@ import (
 	"reflect"
 
 	"github.com/grafana/dskit/tenant"
+	"github.com/grafana/loki/v3/pkg/validation"
 	"gopkg.in/yaml.v2"
 )
 
@@ -80,6 +81,27 @@ func diffConfig(defaultConfig, actualConfig map[interface{}]interface{}) (map[in
 	return output, nil
 }
 
+func limitsToAllowedMap(l *validation.Limits, allowList []string) (map[string]interface{}, error) {
+	data, err := yaml.Marshal(l)
+	if err != nil {
+		return nil, err
+	}
+	m := make(map[string]interface{})
+	if err := yaml.Unmarshal(data, &m); err != nil {
+		return nil, err
+	}
+	if len(allowList) == 0 {
+		return m, nil
+	}
+	out := make(map[string]interface{})
+	for _, k := range allowList {
+		if v, ok := m[k]; ok {
+			out[k] = v
+		}
+	}
+	return out, nil
+}
+
 func configHandler(actualCfg interface{}, defaultCfg interface{}) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		var output interface{}
@@ -138,7 +160,12 @@ func (t *Loki) tenantLimitsHandler() func(http.ResponseWriter, *http.Request) {
 			}
 		}
 
-		writeYAMLResponse(w, limit)
+		limitMap, err := limitsToAllowedMap(limit, t.TenantLimitsAllowList)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		writeYAMLResponse(w, limitMap)
 	}
 }
 

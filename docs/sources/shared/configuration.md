@@ -1515,6 +1515,9 @@ ingest_limits_frontend_client:
 # This setting is deprecated and will be removed in the next minor release.
 # CLI flag: -metrics-namespace
 [metrics_namespace: <string> | default = "loki"]
+# Comma-separated list of limits returned by /config/tenant/v1/limits
+# CLI flag: -tenant-limits.allowlist
+[tenant_limits_allowlist: <list of strings> | default = []]
 ```
 
 ### alibabacloud_storage_config
