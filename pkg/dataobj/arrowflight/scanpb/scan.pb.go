@@ -368,7 +368,11 @@ type Ticket struct {
 	// Path of the data object within the server's bucket.
 	ObjectPath string `protobuf:"bytes,2,opt,name=object_path,json=objectPath,proto3" json:"object_path,omitempty"`
 	// Index of the section within the data object.
-	SectionIndex  int32 `protobuf:"varint,3,opt,name=section_index,json=sectionIndex,proto3" json:"section_index,omitempty"`
+	SectionIndex int32 `protobuf:"varint,3,opt,name=section_index,json=sectionIndex,proto3" json:"section_index,omitempty"`
+	// Additional objects served by the same ticket, for tables whose objects
+	// are small enough that one object per endpoint would be wasteful (the
+	// archive). object_path is the first of them.
+	ObjectPaths   []string `protobuf:"bytes,4,rep,name=object_paths,json=objectPaths,proto3" json:"object_paths,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -424,6 +428,13 @@ func (x *Ticket) GetSectionIndex() int32 {
 	return 0
 }
 
+func (x *Ticket) GetObjectPaths() []string {
+	if x != nil {
+		return x.ObjectPaths
+	}
+	return nil
+}
+
 var File_scan_proto protoreflect.FileDescriptor
 
 const file_scan_proto_rawDesc = "" +
@@ -449,12 +460,13 @@ const file_scan_proto_rawDesc = "" +
 	"\tPredicate\x12\x16\n" +
 	"\x06column\x18\x01 \x01(\tR\x06column\x12(\n" +
 	"\x02op\x18\x02 \x01(\x0e2\x18.loki.dataobj.scan.v1.OpR\x02op\x125\n" +
-	"\x06values\x18\x03 \x03(\v2\x1d.loki.dataobj.scan.v1.LiteralR\x06values\"\x8b\x01\n" +
+	"\x06values\x18\x03 \x03(\v2\x1d.loki.dataobj.scan.v1.LiteralR\x06values\"\xae\x01\n" +
 	"\x06Ticket\x12;\n" +
 	"\arequest\x18\x01 \x01(\v2!.loki.dataobj.scan.v1.ScanRequestR\arequest\x12\x1f\n" +
 	"\vobject_path\x18\x02 \x01(\tR\n" +
 	"objectPath\x12#\n" +
-	"\rsection_index\x18\x03 \x01(\x05R\fsectionIndex*\\\n" +
+	"\rsection_index\x18\x03 \x01(\x05R\fsectionIndex\x12!\n" +
+	"\fobject_paths\x18\x04 \x03(\tR\vobjectPaths*\\\n" +
 	"\x02Op\x12\x12\n" +
 	"\x0eOP_UNSPECIFIED\x10\x00\x12\t\n" +
 	"\x05OP_EQ\x10\x01\x12\t\n" +

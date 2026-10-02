@@ -107,7 +107,7 @@ func startServer(t *testing.T) flight.Client {
 
 	srv := flight.NewServerWithMiddleware(nil)
 	require.NoError(t, srv.Init("127.0.0.1:0"))
-	srv.RegisterFlightService(arrowflight.NewServer(catalog, log.NewNopLogger()))
+	srv.RegisterFlightService(arrowflight.NewServer(log.NewNopLogger(), catalog))
 	go func() { _ = srv.Serve() }()
 	t.Cleanup(srv.Shutdown)
 

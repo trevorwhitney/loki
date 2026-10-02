@@ -1,4 +1,4 @@
-.PHONY: generate bench list run run-debug stream grafana grafana-stop discover remote-test generate-k6 gotestsum-remote build-correctness-metrics flight-server sql compare
+.PHONY: generate bench list run run-debug stream grafana grafana-stop grafana-sql discover remote-test generate-k6 gotestsum-remote build-correctness-metrics flight-server sql compare dataobj-sql sql-server sql-server-stop
 
 # Load local secrets from .env (ignored by git).
 # Copy .env.template → .env and fill in real values.
@@ -18,9 +18,14 @@ GOTESTSUM ?= $(shell which gotestsum 2>/dev/null)
 RANGE_TYPE ?= range
 METADATA_DIR ?= testdata
 
+# ARCHIVE_RULES is a semicolon-separated list of stream selectors; matching
+# streams are written to data/archive as gzipped OTLP JSON (the archive-and-
+# replay layout) instead of to the live stores. Example:
+#   make generate ARCHIVE_RULES='{service_name="nginx"};{service_name="web-server", env="dev"}'
+ARCHIVE_RULES ?=
 generate:
 	@echo "Generating benchmark data..."
-	@go run ./cmd/generate/main.go -size $(SIZE) -tenant $(TENANT)
+	@go run ./cmd/generate/main.go -size $(SIZE) -tenant $(TENANT) -archive-rules '$(ARCHIVE_RULES)'
 
 bench:
 	@echo "Running all benchmarks..."
@@ -38,23 +43,41 @@ run-debug:
 stream:
 	@go run ./cmd/stream/main.go | less
 
+# Common docker flags for the Grafana targets: anonymous admin, no caching,
+# the Loki datasource, and the Loki app plugins.
+GRAFANA_DOCKER_ARGS = \
+	--name loki-bench-grafana \
+	-p 3000:3000 \
+	-e GF_AUTH_ANONYMOUS_ENABLED=true \
+	-e GF_AUTH_DISABLE_LOGIN_FORM=true \
+	-e GF_AUTH_ANONYMOUS_ORG_ROLE=Admin \
+	-e GF_AUTH_BASIC_ENABLED=false \
+	-e GF_USERS_DEFAULT_THEME=light \
+	-e GF_CACHING_ENABLED=false \
+	-e GF_PLUGINS_PREINSTALL_SYNC=grafana-lokiexplore-app@main@https://storage.googleapis.com/integration-artifacts/grafana-lokiexplore-app/release/main/any/grafana-lokiexplore-app-main.zip,grafana-lokioperational-app@main@https://storage.googleapis.com/integration-artifacts/grafana-lokioperational-app/release/latest/grafana-lokioperational-app-latest.zip \
+	-v $(PWD)/grafana-datasource.yaml:/etc/grafana/provisioning/datasources/datasources.yml \
+	-v $(PWD)/grafana-plugins.yaml:/etc/grafana/provisioning/plugins/app.yml
+
 grafana:
 	@echo "Starting Grafana with Loki datasource..."
-	@docker run -d \
-		--name loki-bench-grafana \
-		-p 3000:3000 \
-		-e GF_AUTH_ANONYMOUS_ENABLED=true \
-		-e GF_AUTH_DISABLE_LOGIN_FORM=true \
-		-e GF_AUTH_ANONYMOUS_ORG_ROLE=Admin \
-		-e GF_AUTH_BASIC_ENABLED=false \
-		-e GF_USERS_DEFAULT_THEME=light \
-		-e GF_CACHING_ENABLED=false \
-		-e GF_PLUGINS_PREINSTALL_SYNC=grafana-lokiexplore-app@main@https://storage.googleapis.com/integration-artifacts/grafana-lokiexplore-app/release/main/any/grafana-lokiexplore-app-main.zip,grafana-lokioperational-app@main@https://storage.googleapis.com/integration-artifacts/grafana-lokioperational-app/release/latest/grafana-lokioperational-app-latest.zip \
-		-v $(PWD)/grafana-datasource.yaml:/etc/grafana/provisioning/datasources/datasources.yml \
-		-v $(PWD)/grafana-plugins.yaml:/etc/grafana/provisioning/plugins/app.yml \
-		grafana/grafana:latest
+	@docker run -d $(GRAFANA_DOCKER_ARGS) grafana/grafana:latest
 	@echo "Grafana available at http://localhost:3000"
 	@echo "Loki datasource pre-configured to connect to localhost:3100"
+
+# grafana-sql is `grafana` plus a core Postgres datasource pointed at
+# `make sql-server` (dataobj-sql speaking pgwire on $(PG_ADDR)) and the
+# provisioned SQL dashboard, so LogQL and SQL panels sit side by side.
+grafana-sql:
+	@echo "Starting Grafana with Loki and dataobj-sql (Postgres) datasources..."
+	@docker run -d $(GRAFANA_DOCKER_ARGS) \
+		-v $(PWD)/grafana-datasource-sql.yaml:/etc/grafana/provisioning/datasources/datasources-sql.yml \
+		-v $(PWD)/grafana-dashboards.yaml:/etc/grafana/provisioning/dashboards/dashboards.yml \
+		-v $(PWD)/grafana-dashboard-sql.json:/var/lib/grafana/dashboards/dataobj-sql.json \
+		-v $(PWD)/grafana-dashboard-archive.json:/var/lib/grafana/dashboards/dataobj-archive.json \
+		grafana/grafana:latest
+	@echo "Grafana available at http://localhost:3000"
+	@echo "Postgres datasource 'dataobj-sql' connects to host.docker.internal:5432 (run 'make sql-server')"
+	@echo "Dashboards: http://localhost:3000/d/dataobj-sql-bench and http://localhost:3000/d/dataobj-archive"
 
 grafana-stop:
 	@echo "Stopping Grafana container..."
@@ -257,17 +280,59 @@ endif
 DATAOBJ_DIR ?= data/storage/dataobj
 FLIGHT_ADDR ?= 127.0.0.1:8815
 
+# Archive objects (gzipped OTLP JSON, archive-and-replay layout) served as the
+# archive_logs table when ARCHIVE_DIR/ARCHIVE_TENANT exists. `make generate
+# ARCHIVE_RULES=...` writes data/archive/$(TENANT); point ARCHIVE_DIR at a copy
+# of a real bucket (for example archive-dev) and ARCHIVE_TENANT at a tenant id
+# to serve real objects instead. ARCHIVE_LABELS lists the OTLP resource
+# attributes promoted to labels for native OTLP objects (default: Loki's list).
+ARCHIVE_DIR ?= data/archive
+ARCHIVE_TENANT ?= $(TENANT)
+ARCHIVE_LABELS ?=
+ARCHIVE_FLAGS = $(if $(wildcard $(ARCHIVE_DIR)/$(ARCHIVE_TENANT)),-archive-dir $(ARCHIVE_DIR) -archive-tenant $(ARCHIVE_TENANT) $(if $(ARCHIVE_LABELS),-archive-labels '$(ARCHIVE_LABELS)',),)
+
 # flight-server serves the generated data objects over Arrow Flight so that
 # external query engines can scan them. Run `make generate` first.
 flight-server:
 	@echo "Serving $(DATAOBJ_DIR) over Arrow Flight on $(FLIGHT_ADDR)..."
-	@go run ../../../tools/dataobj-flight -dir $(DATAOBJ_DIR) -addr $(FLIGHT_ADDR)
+	@go run ../../../tools/dataobj-flight -dir $(DATAOBJ_DIR) -addr $(FLIGHT_ADDR) $(ARCHIVE_FLAGS)
 
 # sql runs a DataFusion SQL query against the running flight-server, e.g.
 #   make sql QUERY="SELECT service_name, count(*) FROM logs GROUP BY 1"
 # Requires a Rust toolchain and protoc; the first build takes a few minutes.
 sql:
 	@cd ../../../tools/dataobj-sql && cargo run --quiet --release -- --addr http://$(FLIGHT_ADDR) "$(QUERY)"
+
+# dataobj-sql builds the Rust CLI (cargo is incremental, so this is a cheap
+# no-op once built). Set DATAOBJ_SQL_BIN to use a binary built elsewhere.
+DATAOBJ_SQL_DIR = ../../../tools/dataobj-sql
+DATAOBJ_SQL_BIN ?= $(DATAOBJ_SQL_DIR)/target/release/dataobj-sql
+dataobj-sql:
+	@cd $(DATAOBJ_SQL_DIR) && cargo build --release --quiet
+
+build/dataobj-flight: $(wildcard ../../../tools/dataobj-flight/*.go) $(wildcard ../../dataobj/arrowflight/*.go)
+	@mkdir -p build
+	@go build -o $@ ../../../tools/dataobj-flight
+
+# sql-server runs the Flight server and dataobj-sql in Postgres wire protocol
+# mode together in the foreground, logs interleaved. Point any Postgres client
+# at $(PG_ADDR):
+#   psql -h 127.0.0.1 -p 5432 -U loki -d datafusion -c 'SELECT count(*) FROM logs'
+# Use FLIGHT_FLAGS=-v to log every scan the Flight server plans (shows which
+# predicates were pushed down). Ctrl-C stops both; so does `make sql-server-stop`.
+PG_ADDR ?= 0.0.0.0:5432
+FLIGHT_FLAGS ?=
+sql-server: build/dataobj-flight dataobj-sql
+	@echo "Serving $(DATAOBJ_DIR) $(if $(ARCHIVE_FLAGS),and archive $(ARCHIVE_DIR)/$(ARCHIVE_TENANT) ,)over Arrow Flight on $(FLIGHT_ADDR) and Postgres wire protocol on $(PG_ADDR)..."
+	@./build/dataobj-flight -dir $(DATAOBJ_DIR) -addr $(FLIGHT_ADDR) $(ARCHIVE_FLAGS) $(FLIGHT_FLAGS) & \
+	FLIGHT_PID=$$!; \
+	trap 'kill $$FLIGHT_PID 2>/dev/null' EXIT INT TERM; \
+	until nc -z $(firstword $(subst :, ,$(FLIGHT_ADDR))) $(lastword $(subst :, ,$(FLIGHT_ADDR))) 2>/dev/null; do sleep 0.2; done; \
+	$(DATAOBJ_SQL_BIN) --addr http://$(FLIGHT_ADDR) --pg-addr $(PG_ADDR) --tenant $(TENANT)
+
+sql-server-stop:
+	@pkill -f 'build/dataobj-flight' || true
+	@pkill -f 'dataobj-sql.*--pg-addr' || true
 
 # compare runs the storage-equality correctness test for the fast suite across
 # the chunk baseline, the v2 engine, and the Flight/DataFusion POC, and writes

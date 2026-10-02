@@ -1,8 +1,11 @@
 package bench
 
 import (
+	"encoding/binary"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"hash/fnv"
 	"iter"
 	"maps"
 	"math/rand"
@@ -372,11 +375,13 @@ func (g *Generator) generateEntriesForStream(meta StreamMetadata) []logproto.Ent
 			// Randomly select log level for this entry, biased towards the stream's default level
 			level := g.config.LabelConfig.LogLevels[g.rnd.Intn(len(g.config.LabelConfig.LogLevels))]
 
-			// Generate trace context for some entries (about 30%)
+			// Generate trace context for some entries (about 30%). Trace IDs
+			// come from a small pool shared by every stream in the same time
+			// slot, so lines from different services can be correlated.
 			var traceCtx *OTELTraceContext
 			if g.rnd.Float32() < 0.3 {
 				traceCtx = &OTELTraceContext{
-					TraceID: faker.TraceID(),
+					TraceID: g.traceIDForTime(entryTs),
 					SpanID:  faker.SpanID(),
 				}
 			}
@@ -457,6 +462,27 @@ func (g *Generator) GenerateDataset(targetSize int64, outputFile string) error {
 	}
 
 	return os.WriteFile(outputFile, data, 0o644)
+}
+
+const (
+	// traceSlot is the window within which streams share trace IDs.
+	traceSlot = time.Minute
+	// tracePoolSize is the number of distinct trace IDs per slot.
+	tracePoolSize = 4
+)
+
+// traceIDForTime returns one of tracePoolSize trace IDs that are identical
+// for every stream whose entry falls in the same traceSlot. The IDs are a
+// function of the seed, the slot and the pick, so the dataset stays
+// reproducible and a join on trace_id across services returns rows.
+func (g *Generator) traceIDForTime(ts time.Time) string {
+	slot := ts.Sub(g.config.StartTime) / traceSlot
+	pick := g.rnd.Intn(tracePoolSize)
+	h := fnv.New128a()
+	_ = binary.Write(h, binary.BigEndian, g.config.Seed)
+	_ = binary.Write(h, binary.BigEndian, int64(slot))
+	_ = binary.Write(h, binary.BigEndian, int64(pick))
+	return hex.EncodeToString(h.Sum(nil))
 }
 
 // OTELAttributes represents OpenTelemetry attributes for logs

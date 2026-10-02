@@ -6,10 +6,14 @@ description = "Run DataFusion SQL against Loki data objects served by tools/data
 publish = false
 
 [dependencies]
-# datafusion 55 pins arrow 59; arrow-flight must match that major version so
-# the RecordBatch types are interchangeable.
-datafusion = "55.1"
-arrow-flight = "59"
+# datafusion-postgres 0.18 pins datafusion 54, which pins arrow 58;
+# arrow-flight must match that major version so the RecordBatch types are
+# interchangeable.
+datafusion = "54.1"
+arrow-flight = "58"
+datafusion-postgres = "0.18"
+log = "0.4"
+env_logger = "0.11"
 tonic = "0.14"
 prost = "0.14"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "io-std", "io-util"] }

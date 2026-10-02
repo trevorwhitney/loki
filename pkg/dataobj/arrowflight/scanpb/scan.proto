@@ -67,4 +67,8 @@ message Ticket {
   string object_path = 2;
   // Index of the section within the data object.
   int32 section_index = 3;
+  // Additional objects served by the same ticket, for tables whose objects
+  // are small enough that one object per endpoint would be wasteful (the
+  // archive). object_path is the first of them.
+  repeated string object_paths = 4;
 }

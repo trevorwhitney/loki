@@ -19,7 +19,7 @@ import (
 	"github.com/grafana/loki/v3/pkg/dataobj/arrowflight/scanpb"
 )
 
-// Server implements the Arrow Flight service over a [Catalog].
+// Server implements the Arrow Flight service over one or more [Source]s.
 //
 // Supported calls:
 //
@@ -27,33 +27,66 @@ import (
 //   - GetSchema returns the schema of a table; the descriptor is either a path
 //     of one element (the table name) or a [scanpb.ScanRequest] command.
 //   - GetFlightInfo plans a [scanpb.ScanRequest] command into one endpoint per
-//     data object section.
+//     ticket returned by the owning source.
 //   - DoGet streams the record batches of one endpoint.
 type Server struct {
 	flight.BaseFlightServer
 
-	catalog *Catalog
+	sources []Source
+	byTable map[string]Source
 	logger  log.Logger
 	alloc   memory.Allocator
 }
 
-// NewServer returns a Flight service serving the tables of catalog. Register
-// it with [flight.Server.RegisterFlightService].
-func NewServer(catalog *Catalog, logger log.Logger) *Server {
+// NewServer returns a Flight service serving the tables of every source.
+// Table names must be unique across sources. Register it with
+// [flight.Server.RegisterFlightService].
+func NewServer(logger log.Logger, sources ...Source) *Server {
 	if logger == nil {
 		logger = log.NewNopLogger()
 	}
-	return &Server{
-		catalog: catalog,
+	s := &Server{
+		sources: sources,
+		byTable: make(map[string]Source),
 		logger:  logger,
 		alloc:   memory.DefaultAllocator,
 	}
+	for _, src := range sources {
+		for _, name := range src.Tables() {
+			s.byTable[name] = src
+		}
+	}
+	return s
+}
+
+// Tables returns the names of all served tables in a stable order.
+func (s *Server) Tables() []string {
+	var names []string
+	for _, src := range s.sources {
+		names = append(names, src.Tables()...)
+	}
+	return names
+}
+
+func (s *Server) table(name string) (Source, *TableSchema, error) {
+	src, ok := s.byTable[name]
+	if !ok {
+		return nil, nil, status.Errorf(codes.NotFound, "unknown table %q", name)
+	}
+	ts, ok := src.Table(name)
+	if !ok {
+		return nil, nil, status.Errorf(codes.NotFound, "unknown table %q", name)
+	}
+	return src, ts, nil
 }
 
 // ListFlights implements [flight.FlightServer].
 func (s *Server) ListFlights(_ *flight.Criteria, stream flight.FlightService_ListFlightsServer) error {
-	for _, name := range s.catalog.Tables() {
-		ts, _ := s.catalog.Table(name)
+	for _, name := range s.Tables() {
+		_, ts, err := s.table(name)
+		if err != nil {
+			return err
+		}
 		info := &flight.FlightInfo{
 			Schema:           flight.SerializeSchema(ts.Schema, s.alloc),
 			FlightDescriptor: &flight.FlightDescriptor{Type: flight.DescriptorPATH, Path: []string{name}},
@@ -73,12 +106,10 @@ func (s *Server) GetSchema(_ context.Context, desc *flight.FlightDescriptor) (*f
 	if err != nil {
 		return nil, err
 	}
-
-	ts, ok := s.catalog.Table(req.GetTable())
-	if !ok {
-		return nil, status.Errorf(codes.NotFound, "unknown table %q", req.GetTable())
+	_, ts, err := s.table(req.GetTable())
+	if err != nil {
+		return nil, err
 	}
-
 	schema, err := ts.Project(req.GetColumns())
 	if err != nil {
 		return nil, status.Error(codes.InvalidArgument, err.Error())
@@ -87,41 +118,35 @@ func (s *Server) GetSchema(_ context.Context, desc *flight.FlightDescriptor) (*f
 }
 
 // GetFlightInfo implements [flight.FlightServer].
-func (s *Server) GetFlightInfo(_ context.Context, desc *flight.FlightDescriptor) (*flight.FlightInfo, error) {
+func (s *Server) GetFlightInfo(ctx context.Context, desc *flight.FlightDescriptor) (*flight.FlightInfo, error) {
 	req, err := scanRequestFromDescriptor(desc)
 	if err != nil {
 		return nil, err
 	}
-
-	ts, ok := s.catalog.Table(req.GetTable())
-	if !ok {
-		return nil, status.Errorf(codes.NotFound, "unknown table %q", req.GetTable())
+	src, ts, err := s.table(req.GetTable())
+	if err != nil {
+		return nil, err
 	}
-
 	schema, err := ts.Project(req.GetColumns())
 	if err != nil {
 		return nil, status.Error(codes.InvalidArgument, err.Error())
 	}
 
-	parts, err := s.catalog.Partitions(req.GetTable())
+	tickets, err := src.Plan(ctx, req)
 	if err != nil {
-		return nil, status.Error(codes.Internal, err.Error())
+		return nil, status.Error(codes.InvalidArgument, err.Error())
 	}
 
-	endpoints := make([]*flight.FlightEndpoint, 0, len(parts))
-	for _, p := range parts {
-		tkt, err := proto.Marshal(&scanpb.Ticket{
-			Request:      req,
-			ObjectPath:   p.ObjectPath,
-			SectionIndex: int32(p.SectionIndex),
-		})
+	endpoints := make([]*flight.FlightEndpoint, 0, len(tickets))
+	for _, tkt := range tickets {
+		raw, err := proto.Marshal(tkt)
 		if err != nil {
 			return nil, status.Errorf(codes.Internal, "encoding ticket: %v", err)
 		}
-		endpoints = append(endpoints, &flight.FlightEndpoint{Ticket: &flight.Ticket{Ticket: tkt}})
+		endpoints = append(endpoints, &flight.FlightEndpoint{Ticket: &flight.Ticket{Ticket: raw}})
 	}
 
-	level.Debug(s.logger).Log("msg", "planned scan", "table", req.GetTable(), "columns", len(req.GetColumns()), "predicates", len(req.GetPredicates()), "endpoints", len(endpoints))
+	level.Debug(s.logger).Log("msg", "planned scan", "table", req.GetTable(), "columns", len(req.GetColumns()), "predicates", describePredicates(req.GetPredicates()), "endpoints", len(endpoints))
 
 	return &flight.FlightInfo{
 		Schema:           flight.SerializeSchema(schema, s.alloc),
@@ -142,7 +167,11 @@ func (s *Server) DoGet(tkt *flight.Ticket, stream flight.FlightService_DoGetServ
 	ctx := stream.Context()
 	start := time.Now()
 
-	sc, err := s.catalog.Scan(ctx, &t)
+	src, _, err := s.table(t.GetRequest().GetTable())
+	if err != nil {
+		return err
+	}
+	sc, err := src.Scan(ctx, &t)
 	if err != nil {
 		return status.Errorf(codes.InvalidArgument, "opening scan: %v", err)
 	}
@@ -157,7 +186,7 @@ func (s *Server) DoGet(tkt *flight.Ticket, stream flight.FlightService_DoGetServ
 			break
 		} else if err != nil {
 			_ = w.Close()
-			return status.Errorf(codes.Internal, "reading section: %v", err)
+			return status.Errorf(codes.Internal, "reading %s: %v", t.GetObjectPath(), err)
 		}
 
 		werr := w.Write(rec)
@@ -174,7 +203,11 @@ func (s *Server) DoGet(tkt *flight.Ticket, stream flight.FlightService_DoGetServ
 		return fmt.Errorf("closing record writer: %w", err)
 	}
 
-	level.Debug(s.logger).Log("msg", "served scan", "table", t.GetRequest().GetTable(), "object", t.GetObjectPath(), "section", t.GetSectionIndex(), "rows", rows, "batches", batches, "duration", time.Since(start))
+	objects := len(t.GetObjectPaths())
+	if objects == 0 {
+		objects = 1
+	}
+	level.Debug(s.logger).Log("msg", "served scan", "table", t.GetRequest().GetTable(), "object", t.GetObjectPath(), "objects", objects, "section", t.GetSectionIndex(), "rows", rows, "batches", batches, "duration", time.Since(start))
 	return nil
 }
 

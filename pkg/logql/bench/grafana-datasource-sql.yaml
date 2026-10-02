@@ -1,0 +1,27 @@
+# Grafana core Postgres datasource pointed at `dataobj-sql --pg-addr`, which
+# speaks the Postgres wire protocol in front of DataFusion and the Arrow Flight
+# server. Mounted by `make grafana-sql` next to the Loki datasource so LogQL
+# and SQL panels can sit side by side over the same generated data.
+apiVersion: 1
+datasources:
+  - name: dataobj-sql
+    type: grafana-postgresql-datasource
+    uid: dataobj-sql
+    access: proxy
+    editable: true
+    url: host.docker.internal:5432
+    # pgwire mode has no authentication; the user name is only echoed back by
+    # pg_catalog functions and the database name is the DataFusion catalog.
+    user: loki
+    jsonData:
+      database: datafusion
+      sslmode: disable
+      # Lowest version Grafana offers. Keeps the macros on plain SQL and
+      # steers the query builder away from newer catalog features.
+      postgresVersion: 903
+      timescaledb: false
+      maxOpenConns: 4
+      maxIdleConns: 4
+      connMaxLifetime: 14400
+    secureJsonData:
+      password: ''

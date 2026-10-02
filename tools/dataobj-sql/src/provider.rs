@@ -97,14 +97,16 @@ impl TableProvider for DataobjTable {
 
         // DataFusion asks for zero columns when it only needs row counts; the
         // server needs at least one column to drive the scan, so ask for the
-        // stream ID and let the exec node drop it.
+        // table's first column and let the exec node drop it.
         let mut columns: Vec<String> = projected_schema
             .fields()
             .iter()
             .map(|f| f.name().clone())
             .collect();
         if columns.is_empty() {
-            columns.push("stream_id".to_string());
+            if let Some(first) = self.schema.fields().first() {
+                columns.push(first.name().clone());
+            }
         }
 
         let request = ScanRequest {

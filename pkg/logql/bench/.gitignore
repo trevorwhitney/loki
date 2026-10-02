@@ -1,5 +1,7 @@
 # Ignore generated data directory
 data/
+# Local copy of real archive objects (see tmp-notes/GOAL-3)
+archive-dev/
 *.prof
 *.log
 bench.test

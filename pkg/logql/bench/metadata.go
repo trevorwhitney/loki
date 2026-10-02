@@ -106,6 +106,12 @@ type DatasetMetadata struct {
 	ByLabelKey           map[string][]string                    `json:"by_label_key"`           // label name -> selectors with that label
 	ByKeyword            map[string][]string                    `json:"by_keyword"`             // keyword -> selectors containing that keyword
 	MetadataBySelector   map[string]*SerializableStreamMetadata `json:"metadata_by_selector"`   // selector -> stream metadata for range resolution
+
+	// ArchiveRules are the stream selectors whose streams were written to the
+	// archive store instead of the live stores; ArchivedSelectors lists those
+	// streams. Both are empty when the dataset was generated without rules.
+	ArchiveRules      []string `json:"archive_rules,omitempty"`
+	ArchivedSelectors []string `json:"archived_selectors,omitempty"`
 }
 
 // TimeRange represents the temporal bounds of a dataset

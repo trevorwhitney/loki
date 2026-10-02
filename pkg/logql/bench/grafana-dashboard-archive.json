@@ -1,0 +1,200 @@
+{
+  "uid": "dataobj-archive",
+  "title": "dataobj-sql: archive rule split and live-to-archive join",
+  "description": "Streams matched by an archive rule are served from gzipped OTLP JSON archive objects as archive_logs; the rest are live data objects (logs). Provisioned by `make grafana-sql`.",
+  "tags": [
+    "loki",
+    "dataobj",
+    "datafusion",
+    "archive"
+  ],
+  "timezone": "utc",
+  "schemaVersion": 39,
+  "version": 1,
+  "editable": true,
+  "refresh": "",
+  "time": {
+    "from": "2024-01-01T09:00:00.000Z",
+    "to": "2024-01-01T12:00:00.000Z"
+  },
+  "templating": {
+    "list": []
+  },
+  "annotations": {
+    "list": []
+  },
+  "panels": [
+    {
+      "id": 1,
+      "type": "timeseries",
+      "title": "Archived lines per 5m by service_name",
+      "description": "archive_logs is served by the archive scanner from gzipped OTLP JSON objects (data/archive, the archive-and-replay layout). The time filter selects five-minute partitions; nothing else is indexed.",
+      "gridPos": {
+        "h": 10,
+        "w": 12,
+        "x": 0,
+        "y": 0
+      },
+      "datasource": {
+        "type": "grafana-postgresql-datasource",
+        "uid": "dataobj-sql"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "grafana-postgresql-datasource",
+            "uid": "dataobj-sql"
+          },
+          "editorMode": "code",
+          "rawQuery": true,
+          "rawSql": "SELECT $__timeGroupAlias(\"timestamp\", '5m'), service_name AS metric, count(*) AS lines\nFROM archive_logs\nWHERE $__timeFilter(\"timestamp\")\nGROUP BY 1, 2\nORDER BY 1",
+          "format": "time_series"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 1,
+            "fillOpacity": 15,
+            "stacking": {
+              "mode": "normal"
+            }
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "right",
+          "calcs": [
+            "sum"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      }
+    },
+    {
+      "id": 2,
+      "type": "timeseries",
+      "title": "Live versus archived lines per 5m",
+      "description": "Two queries, one per table. The archive rule {service_name=\"nginx\"} and {service_name=\"web-server\", env=\"dev\"} decides which streams went where.",
+      "gridPos": {
+        "h": 10,
+        "w": 12,
+        "x": 12,
+        "y": 0
+      },
+      "datasource": {
+        "type": "grafana-postgresql-datasource",
+        "uid": "dataobj-sql"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "grafana-postgresql-datasource",
+            "uid": "dataobj-sql"
+          },
+          "editorMode": "code",
+          "rawQuery": true,
+          "rawSql": "SELECT $__timeGroupAlias(\"timestamp\", '5m'), 'live (logs)' AS metric, count(*) AS lines\nFROM logs\nWHERE $__timeFilter(\"timestamp\")\nGROUP BY 1, 2\nORDER BY 1",
+          "format": "time_series"
+        },
+        {
+          "refId": "B",
+          "datasource": {
+            "type": "grafana-postgresql-datasource",
+            "uid": "dataobj-sql"
+          },
+          "editorMode": "code",
+          "rawQuery": true,
+          "rawSql": "SELECT $__timeGroupAlias(\"timestamp\", '5m'), 'archived (archive_logs)' AS metric, count(*) AS lines\nFROM archive_logs\nWHERE $__timeFilter(\"timestamp\")\nGROUP BY 1, 2\nORDER BY 1",
+          "format": "time_series"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 1,
+            "fillOpacity": 10
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "right",
+          "calcs": [
+            "sum"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi"
+        }
+      }
+    },
+    {
+      "id": 3,
+      "type": "table",
+      "title": "Archived lines for traces that errored live (join on trace_id)",
+      "description": "Live-to-archive correlation: trace ids seen on error lines in the live logs table, looked up in the archive. The time filter is pushed down to both scans; the join itself runs in DataFusion.",
+      "gridPos": {
+        "h": 14,
+        "w": 24,
+        "x": 0,
+        "y": 10
+      },
+      "datasource": {
+        "type": "grafana-postgresql-datasource",
+        "uid": "dataobj-sql"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "grafana-postgresql-datasource",
+            "uid": "dataobj-sql"
+          },
+          "editorMode": "code",
+          "rawQuery": true,
+          "rawSql": "SELECT a.\"timestamp\", a.service_name, a.trace_id, a.message\nFROM archive_logs a\nJOIN (SELECT DISTINCT trace_id FROM logs\n      WHERE $__timeFilter(\"timestamp\") AND level = 'error' AND trace_id IS NOT NULL) l\n  ON a.trace_id = l.trace_id\nWHERE $__timeFilter(a.\"timestamp\")\nORDER BY 1 DESC LIMIT 100",
+          "format": "table"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {},
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "message"
+            },
+            "properties": [
+              {
+                "id": "custom.width",
+                "value": 900
+              }
+            ]
+          }
+        ]
+      },
+      "options": {
+        "showHeader": true,
+        "cellHeight": "sm",
+        "footer": {
+          "show": false
+        }
+      }
+    }
+  ]
+}

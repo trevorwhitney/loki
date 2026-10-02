@@ -1,0 +1,11 @@
+# Dashboard provider for `make grafana-sql`; dashboards are mounted into
+# /var/lib/grafana/dashboards.
+apiVersion: 1
+providers:
+  - name: logql-bench
+    type: file
+    disableDeletion: false
+    allowUiUpdates: true
+    options:
+      path: /var/lib/grafana/dashboards
+      foldersFromFilesStructure: false

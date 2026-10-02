@@ -71,7 +71,7 @@ func NewFlightSQLStore(dir string, logger log.Logger) (*FlightSQLStore, error) {
 	if err := srv.Init("127.0.0.1:0"); err != nil {
 		return nil, fmt.Errorf("starting flight server: %w", err)
 	}
-	srv.RegisterFlightService(arrowflight.NewServer(catalog, logger))
+	srv.RegisterFlightService(arrowflight.NewServer(logger, catalog))
 	go func() { _ = srv.Serve() }()
 
 	bin, err := dataobjSQLBinary(logger)

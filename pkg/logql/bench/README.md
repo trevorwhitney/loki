@@ -159,6 +159,104 @@ To add new query types:
 1. Modify the `GenerateTestCases` method in `generator_query.go`
 2. Add new query patterns that test different aspects of LogQL
 
+## SQL over the data objects (DataFusion over Arrow Flight)
+
+The generated data objects can be queried with SQL. `tools/dataobj-flight`
+serves them over Arrow Flight (see `pkg/dataobj/arrowflight`), and
+`tools/dataobj-sql` is a DataFusion client with a `logs` and a `streams` table.
+It needs a Rust toolchain and `protoc`; the first build takes a few minutes.
+
+```bash
+make generate SIZE=268435456                      # 256 MB is plenty for a laptop
+make flight-server                                # Arrow Flight on 127.0.0.1:8815
+make sql QUERY="SELECT service_name, count(*) FROM logs GROUP BY 1 ORDER BY 2 DESC"
+make compare                                      # chunk vs v2 engine vs Flight/DataFusion, report in build/
+```
+
+### From Grafana with the core Postgres datasource
+
+`dataobj-sql --pg-addr` speaks the Postgres wire protocol (via
+`datafusion-postgres`), so Grafana's core Postgres datasource, including
+Explore, the visual query builder, autocomplete, and the `$__timeFilter` /
+`$__timeGroup` macros, works without any plugin.
+
+```bash
+make generate SIZE=268435456
+make sql-server          # Flight server + dataobj-sql on 0.0.0.0:5432, foreground
+make grafana-sql         # Grafana on :3000 with the 'dataobj-sql' Postgres datasource and a dashboard
+```
+
+Then open http://localhost:3000/d/dataobj-sql-bench, or Explore with the
+`dataobj-sql` datasource and a query such as:
+
+```sql
+SELECT $__timeGroupAlias("timestamp", '5m'), service_name AS metric, count(*) AS lines
+FROM logs
+WHERE $__timeFilter("timestamp") AND level = 'error'
+GROUP BY 1, 2 ORDER BY 1
+```
+
+For log lines, keep "Format: Table" (the Grafana 13 Postgres editor offers
+only Table and Time series) and put the timestamp first; Explore shows the
+table and a Logs panel renders the same frame as log lines:
+
+```sql
+SELECT "timestamp", message, service_name
+FROM logs
+WHERE $__timeFilter("timestamp") AND service_name = 'nginx'
+ORDER BY 1 DESC LIMIT 100
+```
+
+Set the time range to the generated data (it starts at 2024-01-01 UTC by
+default). Any Postgres client works too:
+
+```bash
+psql -h 127.0.0.1 -p 5432 -U loki -d datafusion -c 'SELECT count(*) FROM logs'
+```
+
+### Archive rules and the `archive_logs` table
+
+An archive rule is a stream selector: matching streams go to the customer's
+archive bucket as gzipped OTLP JSON instead of to Loki. The generator models
+this, and the Flight server serves such objects as a second table:
+
+```bash
+make generate SIZE=268435456 ARCHIVE_RULES='{service_name="nginx"};{service_name="web-server", env="dev"}'
+make sql-server          # also serves archive_logs from data/archive/test-tenant
+make grafana-sql         # adds http://localhost:3000/d/dataobj-archive
+```
+
+`archive_logs` has the envelope columns (`timestamp`, `message`,
+`observed_timestamp`, `trace_id`, `span_id`, `severity_text`, ...), one column
+per stream label, and two map columns, `resource_attributes` and
+`log_attributes`, for everything that is structured metadata in Loki
+(`log_attributes['level']`). Every query needs a time range: the archive has no
+index, so the timestamp predicate is what selects the five-minute partitions to
+read. Live-to-archive correlation is a plain join:
+
+```sql
+SELECT a."timestamp", a.service_name, a.message
+FROM archive_logs a
+JOIN (SELECT DISTINCT trace_id FROM logs
+      WHERE $__timeFilter("timestamp") AND level = 'error' AND trace_id IS NOT NULL) l
+  ON a.trace_id = l.trace_id
+WHERE $__timeFilter(a."timestamp")
+ORDER BY 1 DESC LIMIT 100
+```
+
+To serve a copy of a real archive-and-replay bucket, point `ARCHIVE_DIR` at the
+directory holding `<tenant>/YYYY/MM/DD/HH/mm/*.json.gz` and `ARCHIVE_TENANT` at
+the tenant, for example `make sql-server ARCHIVE_DIR=archive-dev ARCHIVE_TENANT=12345`.
+Converted push-request objects keep their Loki labels; native OTLP objects go
+through Loki's default resource-attribute promotion list (`ARCHIVE_LABELS`
+overrides it).
+
+Useful knobs: `FLIGHT_FLAGS=-v make sql-server` logs every scan the Flight
+server plans, including the pushed-down predicates;
+`RUST_LOG=datafusion_postgres=debug,dataobj_sql=debug` on `dataobj-sql` logs every
+statement a client sends. `make sql-server-stop`
+kills both processes, `make grafana-stop` the container.
+
 ## Remote Correctness Tests
 
 Compare query results between two live Loki endpoints. Requires metadata

@@ -1,0 +1,196 @@
+{
+  "uid": "dataobj-sql-bench",
+  "title": "dataobj-sql: SQL over logql-bench data objects",
+  "description": "Three SQL panels answered by DataFusion over the Arrow Flight server (pkg/dataobj/arrowflight) reading pkg/logql/bench/data. Provisioned by `make grafana-sql`.",
+  "tags": [
+    "loki",
+    "dataobj",
+    "datafusion"
+  ],
+  "timezone": "utc",
+  "schemaVersion": 39,
+  "version": 1,
+  "editable": true,
+  "refresh": "",
+  "time": {
+    "from": "2024-01-01T00:00:00.000Z",
+    "to": "2024-01-02T00:00:00.000Z"
+  },
+  "templating": {
+    "list": []
+  },
+  "annotations": {
+    "list": []
+  },
+  "panels": [
+    {
+      "id": 1,
+      "type": "timeseries",
+      "title": "Log lines per 5m by service_name",
+      "description": "SELECT $__timeGroupAlias + GROUP BY over the logs table; the time filter is pushed down to the Flight server, the aggregate runs in DataFusion.",
+      "gridPos": {
+        "h": 10,
+        "w": 16,
+        "x": 0,
+        "y": 0
+      },
+      "datasource": {
+        "type": "grafana-postgresql-datasource",
+        "uid": "dataobj-sql"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "grafana-postgresql-datasource",
+            "uid": "dataobj-sql"
+          },
+          "editorMode": "code",
+          "rawQuery": true,
+          "rawSql": "SELECT $__timeGroupAlias(\"timestamp\", '5m'), service_name AS metric, count(*) AS lines\nFROM logs\nWHERE $__timeFilter(\"timestamp\")\nGROUP BY 1, 2\nORDER BY 1",
+          "format": "time_series"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 1,
+            "fillOpacity": 10,
+            "stacking": {
+              "mode": "normal"
+            }
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "right",
+          "calcs": [
+            "sum"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      }
+    },
+    {
+      "id": 2,
+      "type": "piechart",
+      "title": "Share of lines by level",
+      "description": "Structured-metadata column `level`; the share of `error` is the point of the panel.",
+      "gridPos": {
+        "h": 10,
+        "w": 8,
+        "x": 16,
+        "y": 0
+      },
+      "datasource": {
+        "type": "grafana-postgresql-datasource",
+        "uid": "dataobj-sql"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "grafana-postgresql-datasource",
+            "uid": "dataobj-sql"
+          },
+          "editorMode": "code",
+          "rawQuery": true,
+          "rawSql": "SELECT level, count(*) AS lines\nFROM logs\nWHERE $__timeFilter(\"timestamp\") AND level IS NOT NULL\nGROUP BY 1\nORDER BY 2 DESC",
+          "format": "table"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short"
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "error"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "red"
+                }
+              }
+            ]
+          }
+        ]
+      },
+      "options": {
+        "pieType": "donut",
+        "displayLabels": [
+          "name",
+          "percent"
+        ],
+        "legend": {
+          "displayMode": "table",
+          "placement": "right",
+          "values": [
+            "value",
+            "percent"
+          ]
+        },
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": true
+        },
+        "tooltip": {
+          "mode": "single"
+        }
+      }
+    },
+    {
+      "id": 3,
+      "type": "logs",
+      "title": "Latest 100 lines",
+      "description": "Table-format query rendered by the Logs panel: Grafana 13 Postgres editor has no \"Logs\" format; the panel takes the first time column as the line timestamp and the first string column as the line body.",
+      "gridPos": {
+        "h": 14,
+        "w": 24,
+        "x": 0,
+        "y": 10
+      },
+      "datasource": {
+        "type": "grafana-postgresql-datasource",
+        "uid": "dataobj-sql"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "grafana-postgresql-datasource",
+            "uid": "dataobj-sql"
+          },
+          "editorMode": "code",
+          "rawQuery": true,
+          "rawSql": "SELECT \"timestamp\", message, service_name, level\nFROM logs\nWHERE $__timeFilter(\"timestamp\")\nORDER BY 1 DESC\nLIMIT 100",
+          "format": "table"
+        }
+      ],
+      "options": {
+        "showTime": true,
+        "showLabels": true,
+        "wrapLogMessage": true,
+        "sortOrder": "Descending",
+        "dedupStrategy": "none",
+        "enableLogDetails": true
+      }
+    }
+  ]
+}
