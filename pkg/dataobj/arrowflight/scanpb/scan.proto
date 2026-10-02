@@ -1,0 +1,70 @@
+syntax = "proto3";
+
+// Package loki.dataobj.scan.v1 defines the messages exchanged between a
+// DataFusion (or any Arrow Flight) client and the Loki data object Flight
+// server. The client plans a scan by sending a ScanRequest as a Flight
+// descriptor command; the server answers with one Flight endpoint per data
+// object section, each carrying a Ticket that the client redeems with DoGet.
+package loki.dataobj.scan.v1;
+
+option go_package = "github.com/grafana/loki/v3/pkg/dataobj/arrowflight/scanpb";
+
+// ScanRequest describes a projection and a conjunction of predicates over a
+// table exposed by the server.
+message ScanRequest {
+  // Name of the table to scan: "logs" or "streams".
+  string table = 1;
+
+  // Columns to return, in order. Empty returns every column of the table.
+  repeated string columns = 2;
+
+  // Predicates that every returned row must satisfy. Predicates are a hint:
+  // the server prunes what it can and may return rows that do not match, so
+  // clients must re-apply the filters.
+  repeated Predicate predicates = 3;
+
+  // Maximum number of rows the client needs. Zero means unlimited. Servers may
+  // ignore this.
+  int64 limit = 4;
+}
+
+// Op is the comparison applied by a Predicate.
+enum Op {
+  OP_UNSPECIFIED = 0;
+  OP_EQ = 1;
+  OP_IN = 2;
+  OP_GT = 3;
+  OP_GTE = 4;
+  OP_LT = 5;
+  OP_LTE = 6;
+}
+
+// Literal is a constant value compared against a column.
+message Literal {
+  oneof value {
+    string string_value = 1;
+    int64 int64_value = 2;
+    uint64 uint64_value = 3;
+    // Nanoseconds since the Unix epoch, UTC.
+    int64 timestamp_ns = 4;
+    bytes bytes_value = 5;
+  }
+}
+
+// Predicate compares a single column against one (comparison ops) or many
+// (OP_IN) literals.
+message Predicate {
+  string column = 1;
+  Op op = 2;
+  repeated Literal values = 3;
+}
+
+// Ticket identifies one unit of work for DoGet: a section of a data object,
+// scanned with the given request.
+message Ticket {
+  ScanRequest request = 1;
+  // Path of the data object within the server's bucket.
+  string object_path = 2;
+  // Index of the section within the data object.
+  int32 section_index = 3;
+}

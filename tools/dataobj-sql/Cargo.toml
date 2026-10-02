@@ -1,0 +1,24 @@
+[package]
+name = "dataobj-sql"
+version = "0.1.0"
+edition = "2021"
+description = "Run DataFusion SQL against Loki data objects served by tools/dataobj-flight"
+publish = false
+
+[dependencies]
+# datafusion 55 pins arrow 59; arrow-flight must match that major version so
+# the RecordBatch types are interchangeable.
+datafusion = "55.1"
+arrow-flight = "59"
+tonic = "0.14"
+prost = "0.14"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "io-std", "io-util"] }
+futures = "0.3"
+async-trait = "0.1"
+clap = { version = "4", features = ["derive"] }
+anyhow = "1"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+[build-dependencies]
+prost-build = "0.14"
