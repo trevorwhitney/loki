@@ -60,18 +60,91 @@ func (st *streamsTable) matchingIDs(keep func(labels map[string]string) bool) []
 	return ids
 }
 
+// objectCache opens data objects on demand and keeps them, together with the
+// in-memory streams tables used to join labels into log rows. It is shared by
+// the walking [Catalog] and the [MetastoreCatalog].
+type objectCache struct {
+	bucket        objstore.BucketReader
+	logger        log.Logger
+	prefetchBytes int64
+
+	mu           sync.Mutex
+	objects      map[string]*objectInfo
+	streamsCache map[string]*streamsTable // keyed by object path and section index
+}
+
+// maxCachedObjects bounds the number of opened objects kept by a cache that
+// discovers objects per request (the metastore catalog); the walking catalog
+// holds all of its objects regardless.
+const maxCachedObjects = 1024
+
+func newObjectCache(bucket objstore.BucketReader, logger log.Logger) *objectCache {
+	return &objectCache{
+		bucket:       bucket,
+		logger:       logger,
+		objects:      make(map[string]*objectInfo),
+		streamsCache: make(map[string]*streamsTable),
+	}
+}
+
+// add registers an already opened object.
+func (oc *objectCache) add(info *objectInfo) {
+	oc.mu.Lock()
+	defer oc.mu.Unlock()
+	oc.objects[info.Path] = info
+}
+
+// object returns the opened object at path, opening it from the bucket on
+// first use.
+func (oc *objectCache) object(ctx context.Context, path string) (*objectInfo, error) {
+	oc.mu.Lock()
+	info, ok := oc.objects[path]
+	oc.mu.Unlock()
+	if ok {
+		return info, nil
+	}
+
+	obj, err := dataobj.FromBucket(ctx, oc.bucket, path, oc.prefetchBytes)
+	if err != nil {
+		return nil, fmt.Errorf("opening data object %s: %w", path, err)
+	}
+	info = &objectInfo{Path: path, Object: obj}
+
+	oc.mu.Lock()
+	defer oc.mu.Unlock()
+	if len(oc.objects) >= maxCachedObjects {
+		oc.objects = make(map[string]*objectInfo)
+		oc.streamsCache = make(map[string]*streamsTable)
+	}
+	if existing, ok := oc.objects[path]; ok {
+		return existing, nil
+	}
+	oc.objects[path] = info
+	return info, nil
+}
+
+// section resolves an object path and section index.
+func (oc *objectCache) section(ctx context.Context, path string, index int) (*objectInfo, *dataobj.Section, error) {
+	info, err := oc.object(ctx, path)
+	if err != nil {
+		return nil, nil, err
+	}
+	sections := info.Object.Sections()
+	if index < 0 || index >= len(sections) {
+		return nil, nil, fmt.Errorf("section index %d out of range for %s (%d sections)", index, path, len(sections))
+	}
+	return info, sections[index], nil
+}
+
 // Catalog holds the set of data objects served by a [Server] and the inferred
-// schemas of the logs and streams tables.
+// schemas of the logs and streams tables. It discovers objects by walking a
+// bucket prefix once; see [MetastoreCatalog] for index-driven discovery.
 type Catalog struct {
-	bucket objstore.BucketReader
+	*objectCache
 	logger log.Logger
 
-	objects map[string]*objectInfo
-	paths   []string // sorted keys of objects
-	tables  map[string]*TableSchema
-
-	streamsMu    sync.Mutex
-	streamsCache map[string]*streamsTable // keyed by object path and section index
+	paths  []string // sorted keys of objects
+	tables map[string]*TableSchema
 }
 
 // OpenCatalog discovers every data object under prefix in bucket and infers
@@ -82,11 +155,9 @@ func OpenCatalog(ctx context.Context, bucket objstore.BucketReader, prefix strin
 	}
 
 	c := &Catalog{
-		bucket:       bucket,
-		logger:       logger,
-		objects:      make(map[string]*objectInfo),
-		tables:       make(map[string]*TableSchema),
-		streamsCache: make(map[string]*streamsTable),
+		objectCache: newObjectCache(bucket, logger),
+		logger:      logger,
+		tables:      make(map[string]*TableSchema),
 	}
 
 	var paths []string
@@ -138,7 +209,7 @@ func OpenCatalog(ctx context.Context, bucket objstore.BucketReader, prefix strin
 		}
 
 		level.Debug(logger).Log("msg", "discovered data object", "path", path, "logs_sections", numLogs, "streams_sections", numStreams)
-		c.objects[path] = &objectInfo{Path: path, Object: obj}
+		c.add(&objectInfo{Path: path, Object: obj})
 		c.paths = append(c.paths, path)
 	}
 
@@ -185,22 +256,9 @@ func (c *Catalog) Partitions(table string) ([]Partition, error) {
 	return parts, nil
 }
 
-// section resolves a partition to its data object and section.
-func (c *Catalog) section(path string, index int) (*objectInfo, *dataobj.Section, error) {
-	info, ok := c.objects[path]
-	if !ok {
-		return nil, nil, fmt.Errorf("unknown data object %q", path)
-	}
-	sections := info.Object.Sections()
-	if index < 0 || index >= len(sections) {
-		return nil, nil, fmt.Errorf("section index %d out of range for %s (%d sections)", index, path, len(sections))
-	}
-	return info, sections[index], nil
-}
-
 // streamsFor returns the in-memory streams table of the given tenant within
 // the data object, loading and caching it on first use.
-func (c *Catalog) streamsFor(ctx context.Context, info *objectInfo, tenant string) (*streamsTable, error) {
+func (c *objectCache) streamsFor(ctx context.Context, info *objectInfo, tenant string) (*streamsTable, error) {
 	var (
 		streamsSec *dataobj.Section
 		streamsIdx int
@@ -217,10 +275,10 @@ func (c *Catalog) streamsFor(ctx context.Context, info *objectInfo, tenant strin
 
 	key := fmt.Sprintf("%s#%d", info.Path, streamsIdx)
 
-	c.streamsMu.Lock()
-	defer c.streamsMu.Unlock()
-
-	if st, ok := c.streamsCache[key]; ok {
+	c.mu.Lock()
+	st, ok := c.streamsCache[key]
+	c.mu.Unlock()
+	if ok {
 		return st, nil
 	}
 
@@ -228,7 +286,9 @@ func (c *Catalog) streamsFor(ctx context.Context, info *objectInfo, tenant strin
 	if err != nil {
 		return nil, fmt.Errorf("loading streams section of %s: %w", info.Path, err)
 	}
+	c.mu.Lock()
 	c.streamsCache[key] = st
+	c.mu.Unlock()
 	return st, nil
 }
 

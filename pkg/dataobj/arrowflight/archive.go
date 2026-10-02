@@ -38,9 +38,25 @@ const (
 	ColumnLogAttributes      = "log_attributes"
 )
 
-// archiveBucketDuration is the time bucket of one archive partition:
-// <prefix>/YYYY/MM/DD/HH/mm/<uuidv7>.json.gz with mm in five-minute steps.
+// archiveBucketDuration is the time bucket of one archive partition: five
+// minutes, in either layout.
 const archiveBucketDuration = 5 * time.Minute
+
+// Archive partition layouts.
+const (
+	// ArchiveLayoutPlain is <prefix>/YYYY/MM/DD/HH/mm/<uuidv7>.json.gz, the
+	// layout of the older dev archives.
+	ArchiveLayoutPlain = "plain"
+	// ArchiveLayoutHive is <prefix>/year=YYYY/month=MM/day=DD/hour=HH/minute=mm/<uuidv7>.json.gz,
+	// the current archive-and-replay layout (the prefix typically ends in
+	// tenant=<id>/signal=logs).
+	ArchiveLayoutHive = "hive"
+)
+
+var archiveLayouts = map[string]struct{ hour, minute string }{
+	ArchiveLayoutPlain: {hour: "2006/01/02/15", minute: "2006/01/02/15/04"},
+	ArchiveLayoutHive:  {hour: "year=2006/month=01/day=02/hour=15", minute: "year=2006/month=01/day=02/hour=15/minute=04"},
+}
 
 // DefaultArchiveIndexLabels is Loki's default list of OTLP resource attributes
 // that become stream labels (distributor.otlp.default_resource_attributes_as_index_labels).
@@ -68,9 +84,12 @@ var DefaultArchiveMetadataColumns = []string{
 // ArchiveConfig configures an [ArchiveSource].
 type ArchiveConfig struct {
 	// Bucket holds the archive objects; Prefix is the tenant's directory in
-	// it (for example "12345" or "archive/test-tenant").
+	// it (for example "12345", "archive/test-tenant" or
+	// "replay-archive/logs/tenant=12345/signal=logs").
 	Bucket objstore.BucketReader
 	Prefix string
+	// Layout is ArchiveLayoutPlain (default) or ArchiveLayoutHive.
+	Layout string
 
 	// IndexLabels are the resource attributes promoted to stream labels for
 	// native OTLP objects. Defaults to DefaultArchiveIndexLabels.
@@ -104,6 +123,9 @@ type ArchiveConfig struct {
 }
 
 func (c *ArchiveConfig) applyDefaults() {
+	if c.Layout == "" {
+		c.Layout = ArchiveLayoutPlain
+	}
 	if len(c.IndexLabels) == 0 {
 		c.IndexLabels = DefaultArchiveIndexLabels
 	}
@@ -150,6 +172,9 @@ func NewArchiveSource(ctx context.Context, cfg ArchiveConfig) (*ArchiveSource, e
 	cfg.applyDefaults()
 	if cfg.Bucket == nil {
 		return nil, errors.New("archive: bucket is required")
+	}
+	if _, ok := archiveLayouts[cfg.Layout]; !ok {
+		return nil, fmt.Errorf("archive: unknown layout %q (want %s or %s)", cfg.Layout, ArchiveLayoutPlain, ArchiveLayoutHive)
 	}
 	cfg.Prefix = strings.Trim(cfg.Prefix, "/")
 
@@ -255,7 +280,7 @@ func (a *ArchiveSource) Plan(ctx context.Context, req *scanpb.ScanRequest) ([]*s
 	if req.GetTable() != TableArchiveLogs {
 		return nil, fmt.Errorf("unknown table %q", req.GetTable())
 	}
-	lower, upper, err := archiveTimeBounds(req.GetPredicates())
+	lower, upper, err := scanTimeBounds(TableArchiveLogs, req.GetPredicates())
 	if err != nil {
 		return nil, err
 	}
@@ -278,10 +303,10 @@ func (a *ArchiveSource) Plan(ctx context.Context, req *scanpb.ScanRequest) ([]*s
 	return tickets, nil
 }
 
-// archiveTimeBounds derives the scanned time range from the timestamp
-// predicates. A lower bound is mandatory: without one every object under the
-// prefix would have to be read. A missing upper bound means "until now".
-func archiveTimeBounds(preds []*scanpb.Predicate) (lower, upper time.Time, err error) {
+// scanTimeBounds derives the scanned time range from the timestamp
+// predicates. A lower bound is mandatory: without one every object of the
+// table would have to be read. A missing upper bound means "until now".
+func scanTimeBounds(table string, preds []*scanpb.Predicate) (lower, upper time.Time, err error) {
 	for _, p := range preds {
 		if p.GetColumn() != ColumnTimestamp || len(p.GetValues()) != 1 {
 			continue
@@ -305,13 +330,13 @@ func archiveTimeBounds(preds []*scanpb.Predicate) (lower, upper time.Time, err e
 		}
 	}
 	if lower.IsZero() {
-		return lower, upper, fmt.Errorf("%s requires a lower timestamp bound (for example WHERE %s BETWEEN ... AND ...): the archive has no index and would otherwise be read in full", TableArchiveLogs, ColumnTimestamp)
+		return lower, upper, fmt.Errorf("%s requires a lower timestamp bound (for example WHERE %s BETWEEN ... AND ...); without one the whole table would be read", table, ColumnTimestamp)
 	}
 	if upper.IsZero() {
 		upper = time.Now().UTC()
 	}
 	if upper.Before(lower) {
-		return lower, upper, fmt.Errorf("empty time range for %s: %s is after %s", TableArchiveLogs, lower, upper)
+		return lower, upper, fmt.Errorf("empty time range for %s: %s is after %s", table, lower, upper)
 	}
 	return lower, upper, nil
 }
@@ -321,14 +346,15 @@ func archiveTimeBounds(preds []*scanpb.Predicate) (lower, upper time.Time, err e
 // LIST calls; a partition's objects are ordered by their uuidv7 names.
 func (a *ArchiveSource) listObjects(ctx context.Context, lower, upper time.Time) ([]string, error) {
 	firstBucket := lower.Truncate(archiveBucketDuration)
+	layout := archiveLayouts[a.cfg.Layout]
 	var objects []string
 	for hour := lower.Truncate(time.Hour); !hour.After(upper); hour = hour.Add(time.Hour) {
-		dir := path.Join(a.cfg.Prefix, hour.Format("2006/01/02/15")) + "/"
+		dir := path.Join(a.cfg.Prefix, hour.Format(layout.hour)) + "/"
 		err := a.cfg.Bucket.Iter(ctx, dir, func(name string) error {
 			if !strings.HasSuffix(name, ".json.gz") {
 				return nil
 			}
-			bucket, ok := archivePartitionTime(a.cfg.Prefix, name)
+			bucket, ok := archivePartitionTime(a.cfg.Prefix, name, layout.minute)
 			if !ok || bucket.Before(firstBucket) || bucket.After(upper) {
 				return nil
 			}
@@ -343,11 +369,12 @@ func (a *ArchiveSource) listObjects(ctx context.Context, lower, upper time.Time)
 	return objects, nil
 }
 
-// archivePartitionTime parses the YYYY/MM/DD/HH/mm partition of an object key.
-func archivePartitionTime(prefix, name string) (time.Time, bool) {
+// archivePartitionTime parses the five-minute partition of an object key in
+// the given minute layout.
+func archivePartitionTime(prefix, name, minuteLayout string) (time.Time, bool) {
 	rel := strings.TrimPrefix(strings.TrimPrefix(name, prefix), "/")
 	dir := path.Dir(rel)
-	t, err := time.Parse("2006/01/02/15/04", dir)
+	t, err := time.Parse(minuteLayout, dir)
 	if err != nil {
 		return time.Time{}, false
 	}

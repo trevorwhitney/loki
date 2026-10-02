@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"github.com/apache/arrow-go/v18/arrow/flight"
 	"hash/fnv"
 	"net"
 	"net/http"
@@ -33,6 +34,7 @@ import (
 	"github.com/prometheus/common/model"
 	"github.com/thanos-io/objstore"
 
+	"github.com/grafana/loki/v3/pkg/dataobj/arrowflight"
 	"github.com/grafana/loki/v3/pkg/dataobj/metastore"
 
 	"github.com/grafana/loki/v3/pkg/analytics"
@@ -149,6 +151,7 @@ const (
 	CacheGenerationLoader           = "cache-generation-loader"
 	PartitionRing                   = "partition-ring"
 	DataObjExplorer                 = "dataobj-explorer"
+	DataObjFlight                   = "dataobj-flight"
 	DataObjBuilder                  = "dataobj-builder"
 	DataObjCompactionPlanner        = "dataobj-compaction-planner"
 	DataObjCompactionWorker         = "dataobj-compaction-worker"
@@ -2184,6 +2187,49 @@ func (t *Loki) initDataObjExplorer() (services.Service, error) {
 	path, handler := explorer.Handler()
 	t.Server.HTTP.PathPrefix(path).Handler(handler)
 	return explorer, nil
+}
+
+// initDataObjFlight registers the Arrow Flight scan service on the gRPC
+// server: the cell's data objects as the logs and streams tables, planned
+// through the metastore, and optionally an archive bucket as archive_logs.
+// External query engines (DataFusion through tools/dataobj-sql) are the
+// clients; the tenant comes from X-Scope-OrgID like any other gRPC call.
+func (t *Loki) initDataObjFlight() (services.Service, error) {
+	store, err := t.getDataObjBucket("dataobj-flight")
+	if err != nil {
+		return nil, err
+	}
+	logger := log.With(util_log.Logger, "component", "dataobj-flight")
+	ctx := context.Background()
+
+	ms := metastore.NewObjectMetastore(store, t.Cfg.DataObj.Metastore, logger, t.metastoreMetrics)
+	catalog, err := arrowflight.NewMetastoreCatalog(ctx, arrowflight.MetastoreCatalogConfig{
+		Bucket:        store,
+		Metastore:     ms,
+		Tenant:        t.Cfg.DataObjFlight.Tenant,
+		SchemaWindow:  t.Cfg.DataObjFlight.SchemaWindow,
+		ExtraLabels:   t.Cfg.DataObjFlight.ExtraLabels,
+		ExtraMetadata: t.Cfg.DataObjFlight.ExtraMetadata,
+		PrefetchBytes: t.Cfg.DataObjFlight.PrefetchBytes,
+		Logger:        logger,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("opening metastore catalog: %w", err)
+	}
+
+	sources := []arrowflight.Source{catalog}
+	if t.Cfg.DataObjFlight.Archive.Enabled {
+		archive, err := arrowflight.NewArchiveSourceFromConfig(ctx, t.Cfg.DataObjFlight.Archive, logger)
+		if err != nil {
+			return nil, fmt.Errorf("opening archive: %w", err)
+		}
+		sources = append(sources, archive)
+	}
+
+	srv := arrowflight.NewServer(logger, sources...)
+	flight.RegisterFlightServiceServer(t.Server.GRPC, srv)
+	level.Info(logger).Log("msg", "serving Arrow Flight scan service on the gRPC server", "tables", strings.Join(srv.Tables(), ","), "default_tenant", t.Cfg.DataObjFlight.Tenant)
+	return nil, nil
 }
 
 func (t *Loki) initUI() (services.Service, error) {

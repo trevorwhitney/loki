@@ -33,7 +33,8 @@ func main() {
 		verbose = flag.Bool("v", false, "Enable debug logging.")
 
 		archiveDir      = flag.String("archive-dir", "", "Root directory of an archive bucket (gzipped OTLP JSON under <tenant>/YYYY/MM/DD/HH/mm/). Enables the archive_logs table.")
-		archiveTenant   = flag.String("archive-tenant", "", "Tenant directory within -archive-dir.")
+		archiveTenant   = flag.String("archive-tenant", "", "Tenant directory within -archive-dir (or any prefix, for example tenant=12345/signal=logs with -archive-layout hive).")
+		archiveLayout   = flag.String("archive-layout", arrowflight.ArchiveLayoutPlain, "Partition layout under the tenant prefix: plain (YYYY/MM/DD/HH/mm) or hive (year=/month=/day=/hour=/minute=).")
 		archiveLabels   = flag.String("archive-labels", "", "Comma-separated OTLP resource attributes promoted to stream labels for native OTLP objects. Defaults to Loki's default list.")
 		archiveColumns  = flag.String("archive-label-columns", "", "Comma-separated label columns of archive_logs. Discovered from the first objects when empty.")
 		archiveMetadata = flag.String("archive-metadata", strings.Join(arrowflight.DefaultArchiveMetadataColumns, ","), "Comma-separated structured metadata keys exposed as columns of archive_logs (the rest is in log_attributes).")
@@ -50,6 +51,7 @@ func main() {
 	archive := archiveOptions{
 		dir:          *archiveDir,
 		tenant:       *archiveTenant,
+		layout:       *archiveLayout,
 		labels:       splitList(*archiveLabels),
 		labelColumns: splitList(*archiveColumns),
 		metadata:     splitList(*archiveMetadata),
@@ -62,6 +64,7 @@ func main() {
 
 type archiveOptions struct {
 	dir, tenant  string
+	layout       string
 	labels       []string
 	labelColumns []string
 	metadata     []string
@@ -106,6 +109,7 @@ func run(ctx context.Context, dir, prefix, addr string, archive archiveOptions, 
 		src, err := arrowflight.NewArchiveSource(ctx, arrowflight.ArchiveConfig{
 			Bucket:          archiveBucket,
 			Prefix:          archive.tenant,
+			Layout:          archive.layout,
 			IndexLabels:     archive.labels,
 			LabelColumns:    archive.labelColumns,
 			MetadataColumns: archive.metadata,

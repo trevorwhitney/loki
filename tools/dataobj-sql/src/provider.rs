@@ -13,17 +13,50 @@ use datafusion::datasource::TableType;
 use datafusion::logical_expr::{Expr, TableProviderFilterPushDown};
 use datafusion::physical_plan::ExecutionPlan;
 use prost::Message;
+use tonic::metadata::{Ascii, MetadataValue};
+use tonic::service::interceptor::InterceptedService;
+use tonic::service::Interceptor;
 use tonic::transport::Channel;
+use tonic::{Request, Status};
 
 use crate::exec::DataobjFlightExec;
 use crate::filters::to_predicate;
 use crate::scanpb::ScanRequest;
 
-/// A table served by `tools/dataobj-flight`.
+/// Flight client that stamps the tenant on every request.
+pub type FlightClient = FlightServiceClient<InterceptedService<Channel, TenantInterceptor>>;
+
+/// Adds `x-scope-orgid: <tenant>` to every outgoing call, the header Loki
+/// uses for tenant identification on gRPC.
+#[derive(Clone)]
+pub struct TenantInterceptor {
+    tenant: MetadataValue<Ascii>,
+}
+
+impl TenantInterceptor {
+    pub fn new(tenant: &str) -> anyhow::Result<Self> {
+        Ok(Self {
+            tenant: tenant
+                .parse()
+                .map_err(|e| anyhow::anyhow!("invalid tenant {tenant:?}: {e}"))?,
+        })
+    }
+}
+
+impl Interceptor for TenantInterceptor {
+    fn call(&mut self, mut request: Request<()>) -> Result<Request<()>, Status> {
+        request
+            .metadata_mut()
+            .insert("x-scope-orgid", self.tenant.clone());
+        Ok(request)
+    }
+}
+
+/// A table served by `tools/dataobj-flight` or Loki's dataobj-flight target.
 pub struct DataobjTable {
     name: String,
     schema: SchemaRef,
-    client: FlightServiceClient<Channel>,
+    client: FlightClient,
 }
 
 impl fmt::Debug for DataobjTable {
@@ -37,10 +70,7 @@ impl fmt::Debug for DataobjTable {
 
 impl DataobjTable {
     /// Fetches the table schema from the server with GetSchema.
-    pub async fn try_new(
-        mut client: FlightServiceClient<Channel>,
-        name: &str,
-    ) -> anyhow::Result<Self> {
+    pub async fn try_new(mut client: FlightClient, name: &str) -> anyhow::Result<Self> {
         let descriptor = FlightDescriptor::new_path(vec![name.to_string()]);
         let result = client.get_schema(descriptor).await?.into_inner();
         let schema: Schema = (&result).try_into()?;

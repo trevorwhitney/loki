@@ -29,7 +29,7 @@ use serde::Deserialize;
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 use tonic::transport::Channel;
 
-use crate::provider::DataobjTable;
+use crate::provider::{DataobjTable, FlightClient, TenantInterceptor};
 
 #[derive(Parser)]
 #[command(about = "Run DataFusion SQL against Loki data objects over Arrow Flight")]
@@ -56,9 +56,9 @@ struct Args {
     #[arg(long, value_name = "HOST:PORT")]
     pg_addr: Option<String>,
 
-    /// Tenant whose data objects are served. Only recorded for now: the
-    /// Flight server is single-tenant. Later, the pgwire database name maps
-    /// to a tenant so one process can front many Grafana datasources.
+    /// Tenant sent as X-Scope-OrgID on every Flight call. Later, the pgwire
+    /// database name maps to a tenant so one process can front many Grafana
+    /// datasources.
     #[arg(long, default_value = "test-tenant")]
     tenant: String,
 
@@ -87,7 +87,12 @@ async fn main() -> anyhow::Result<()> {
         .connect()
         .await
         .with_context(|| format!("connecting to {}", args.addr))?;
-    let client = FlightServiceClient::new(channel).max_decoding_message_size(usize::MAX);
+    // Every Flight call carries the tenant as X-Scope-OrgID, which Loki's
+    // gRPC auth middleware requires and the scan service uses to pick the
+    // tenant's data objects and archive.
+    let client: FlightClient =
+        FlightServiceClient::with_interceptor(channel, TenantInterceptor::new(&args.tenant)?)
+            .max_decoding_message_size(usize::MAX);
 
     // information_schema is what Grafana's query builder reads to list
     // tables and columns; pg_catalog is added on top in pgwire mode.
@@ -143,7 +148,7 @@ async fn main() -> anyhow::Result<()> {
 }
 
 /// Returns the names of the tables the server serves, via ListFlights.
-async fn list_tables(mut client: FlightServiceClient<Channel>) -> anyhow::Result<Vec<String>> {
+async fn list_tables(mut client: FlightClient) -> anyhow::Result<Vec<String>> {
     let mut stream = client.list_flights(Criteria::default()).await?.into_inner();
     let mut names = Vec::new();
     while let Some(info) = stream.message().await? {

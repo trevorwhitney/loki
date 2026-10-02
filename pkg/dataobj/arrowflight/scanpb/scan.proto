@@ -65,10 +65,16 @@ message Ticket {
   ScanRequest request = 1;
   // Path of the data object within the server's bucket.
   string object_path = 2;
-  // Index of the section within the data object.
+  // Index of the section within the data object. Its meaning is up to the
+  // source that planned the ticket: the walking catalog uses the absolute
+  // section index, the metastore catalog the logs-relative index the index
+  // objects store (see sections.ForTenant), the archive does not use it.
   int32 section_index = 3;
   // Additional objects served by the same ticket, for tables whose objects
   // are small enough that one object per endpoint would be wasteful (the
   // archive). object_path is the first of them.
   repeated string object_paths = 4;
+  // Stream IDs to restrict the scan to, when the planner already resolved
+  // the label predicates against an index (the metastore). Empty means all.
+  repeated int64 stream_ids = 5;
 }

@@ -38,6 +38,7 @@ import (
 	"github.com/grafana/loki/v3/pkg/compactor"
 	compactorclient "github.com/grafana/loki/v3/pkg/compactor/client"
 	"github.com/grafana/loki/v3/pkg/compactor/deletion"
+	"github.com/grafana/loki/v3/pkg/dataobj/arrowflight"
 	dataobjbuilder "github.com/grafana/loki/v3/pkg/dataobj/builder"
 	dataobjconfig "github.com/grafana/loki/v3/pkg/dataobj/config"
 	"github.com/grafana/loki/v3/pkg/dataobj/metastore"
@@ -122,6 +123,7 @@ type Config struct {
 	MemberlistKV        memberlist.KVConfig        `yaml:"memberlist"`
 	KafkaConfig         kafka.Config               `yaml:"kafka_config,omitempty" category:"experimental"`
 	DataObj             dataobjconfig.Config       `yaml:"dataobj,omitempty" category:"experimental"`
+	DataObjFlight       arrowflight.Config         `yaml:"dataobj_flight,omitempty" category:"experimental"`
 	// TODO(segflow): restore `yaml:"logline,omitempty"` once the logline
 	// configuration is settled. Until then the section is flags-only and left
 	// out of the config reference. Every field is reachable through
@@ -245,6 +247,7 @@ func (c *Config) RegisterFlags(f *flag.FlagSet) {
 	c.IngestLimitsFrontendClient.RegisterFlags(f)
 	c.UI.RegisterFlags(f)
 	c.DataObj.RegisterFlags(f)
+	c.DataObjFlight.RegisterFlags(f)
 	c.Logline.RegisterFlags(f)
 }
 
@@ -839,6 +842,7 @@ func (t *Loki) setupModuleManager() error {
 	mm.RegisterModule(LoglineCorrectness, t.initLoglineCorrectness, modules.UserInvisibleTargetableModule)
 	mm.RegisterModule(LoglineQueryFrontendTripperware, t.initLoglineQueryFrontendTripperware, modules.UserInvisibleModule)
 	mm.RegisterModule(DataObjExplorer, t.initDataObjExplorer, modules.UserInvisibleTargetableModule)
+	mm.RegisterModule(DataObjFlight, t.initDataObjFlight, modules.UserInvisibleTargetableModule)
 	mm.RegisterModule(QueryEngine, t.initV2QueryEngine, modules.UserInvisibleTargetableModule)
 	mm.RegisterModule(QueryEngineScheduler, t.initV2QueryEngineScheduler, modules.UserInvisibleTargetableModule)
 	mm.RegisterModule(QueryEngineWorker, t.initV2QueryEngineWorker, modules.UserInvisibleTargetableModule)
@@ -886,6 +890,7 @@ func (t *Loki) setupModuleManager() error {
 		PartitionRing:            {MemberlistKV, Server, Ring},
 		MemberlistKV:             {Server},
 		DataObjExplorer:          {Server, UIRing},
+		DataObjFlight:            {Server},
 		DataObjBuilder:           {ScratchStore, Server, UIRing, Overrides},
 		DataObjCompactionPlanner: {Server, UIRing, Overrides},
 		DataObjCompactionWorker:  {ScratchStore, Server, UIRing},

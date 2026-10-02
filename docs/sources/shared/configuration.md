@@ -1594,6 +1594,84 @@ dataobj:
   # CLI flag: -dataobj.enabled
   [enabled: <boolean> | default = false]
 
+dataobj_flight:
+  # Experimental: Tenant served when a request carries no X-Scope-OrgID; also
+  # used for schema discovery at startup.
+  # CLI flag: -dataobj-flight.tenant
+  [tenant: <string> | default = ""]
+
+  # Experimental: How far back schema discovery looks for label names and
+  # metadata keys.
+  # CLI flag: -dataobj-flight.schema-window
+  [schema_window: <duration> | default = 24h]
+
+  # Experimental: Comma-separated label columns always present in the logs
+  # table.
+  # CLI flag: -dataobj-flight.extra-labels
+  [extra_labels: <string> | default = ""]
+
+  # Experimental: Comma-separated structured metadata columns always present in
+  # the logs table.
+  # CLI flag: -dataobj-flight.extra-metadata
+  [extra_metadata: <string> | default = ""]
+
+  # Experimental: Bytes to prefetch when opening a data object.
+  # CLI flag: -dataobj-flight.prefetch-bytes
+  [prefetch_bytes: <int> | default = 0]
+
+  archive:
+    # Experimental: Serve an archive bucket as the archive_logs table.
+    # CLI flag: -dataobj-flight.archive.enabled
+    [enabled: <boolean> | default = false]
+
+    # Experimental: Object store backend of the archive bucket (gcs, s3, azure,
+    # filesystem).
+    # CLI flag: -dataobj-flight.archive.backend
+    [backend: <string> | default = "gcs"]
+
+    # The thanos_object_store_config block configures the connection to object
+    # storage backend using thanos-io/objstore clients. This will become the
+    # default way of configuring object store clients in future releases.
+    # Currently this is opt-in and takes effect only when `-use-thanos-objstore`
+    # is set to true.
+    # The CLI flags prefix for this block configuration is:
+    # dataobj-flight.archive
+    [storage: <thanos_object_store_config>]
+
+    # Experimental: Prefix of the tenant's partitions within the archive bucket,
+    # for example replay-archive/logs/tenant=12345/signal=logs.
+    # CLI flag: -dataobj-flight.archive.prefix
+    [prefix: <string> | default = ""]
+
+    # Experimental: Partition layout of the archive: hive
+    # (year=/month=/day=/hour=/minute=) or plain (YYYY/MM/DD/HH/mm).
+    # CLI flag: -dataobj-flight.archive.layout
+    [layout: <string> | default = "hive"]
+
+    # Experimental: Comma-separated OTLP resource attributes promoted to labels
+    # for native OTLP objects. Empty means Loki's default list.
+    # CLI flag: -dataobj-flight.archive.index-labels
+    [index_labels: <string> | default = ""]
+
+    # Experimental: Comma-separated label columns of archive_logs; discovered
+    # from sample objects when empty.
+    # CLI flag: -dataobj-flight.archive.label-columns
+    [label_columns: <string> | default = ""]
+
+    # Experimental: Comma-separated structured metadata keys exposed as columns
+    # of archive_logs.
+    # CLI flag: -dataobj-flight.archive.metadata-columns
+    [metadata_columns: <string> | default = ""]
+
+    # Experimental: Archive objects served per Flight endpoint.
+    # CLI flag: -dataobj-flight.archive.objects-per-ticket
+    [objects_per_ticket: <int> | default = 32]
+
+    # Experimental: Archive objects decoded concurrently across scans. 0 means
+    # GOMAXPROCS.
+    # CLI flag: -dataobj-flight.archive.concurrency
+    [concurrency: <int> | default = 0]
+
 ingest_limits:
   # Enable the ingest limits service.
   # CLI flag: -ingest-limits.enabled
@@ -6966,6 +7044,7 @@ The `thanos_object_store_config` block configures the connection to object stora
 Currently this is opt-in and takes effect only when `-use-thanos-objstore` is set to true. The supported CLI flags `<prefix>` used to reference this configuration block are:
 
 - `common.storage.object-store`
+- `dataobj-flight.archive`
 - `object-store`
 - `ruler-storage`
 - `ui.goldfish.results`

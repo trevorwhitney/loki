@@ -46,7 +46,7 @@ func (c *Catalog) Scan(ctx context.Context, tkt *scanpb.Ticket) (Scanner, error)
 		return nil, err
 	}
 
-	info, sec, err := c.section(tkt.GetObjectPath(), int(tkt.GetSectionIndex()))
+	info, sec, err := c.section(ctx, tkt.GetObjectPath(), int(tkt.GetSectionIndex()))
 	if err != nil {
 		return nil, err
 	}
@@ -145,7 +145,7 @@ type logsScanner struct {
 	done          bool
 }
 
-func (c *Catalog) newLogsScanner(ctx context.Context, ts *TableSchema, schema *arrow.Schema, info *objectInfo, sec *dataobj.Section, req *scanpb.ScanRequest) (Scanner, error) {
+func (c *objectCache) newLogsScanner(ctx context.Context, ts *TableSchema, schema *arrow.Schema, info *objectInfo, sec *dataobj.Section, req *scanpb.ScanRequest) (Scanner, error) {
 	logsSec, err := logs.Open(ctx, sec)
 	if err != nil {
 		return nil, fmt.Errorf("opening logs section: %w", err)

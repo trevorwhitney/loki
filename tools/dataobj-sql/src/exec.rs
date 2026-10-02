@@ -6,7 +6,6 @@ use std::sync::Arc;
 
 use arrow_flight::decode::FlightRecordBatchStream;
 use arrow_flight::error::FlightError;
-use arrow_flight::flight_service_client::FlightServiceClient;
 use arrow_flight::Ticket;
 use datafusion::arrow::datatypes::SchemaRef;
 use datafusion::arrow::record_batch::{RecordBatch, RecordBatchOptions};
@@ -20,7 +19,8 @@ use datafusion::physical_plan::{
 };
 use futures::stream::BoxStream;
 use futures::{StreamExt, TryStreamExt};
-use tonic::transport::Channel;
+
+use crate::provider::FlightClient;
 
 type BatchStream = BoxStream<'static, Result<RecordBatch>>;
 
@@ -31,18 +31,14 @@ pub static WIRE_BYTES: AtomicU64 = AtomicU64::new(0);
 /// Reads a scan planned by the server: each Flight endpoint becomes one
 /// DataFusion partition, fetched with DoGet when the partition executes.
 pub struct DataobjFlightExec {
-    client: FlightServiceClient<Channel>,
+    client: FlightClient,
     schema: SchemaRef,
     tickets: Vec<Ticket>,
     properties: Arc<PlanProperties>,
 }
 
 impl DataobjFlightExec {
-    pub fn new(
-        client: FlightServiceClient<Channel>,
-        schema: SchemaRef,
-        tickets: Vec<Ticket>,
-    ) -> Self {
+    pub fn new(client: FlightClient, schema: SchemaRef, tickets: Vec<Ticket>) -> Self {
         let properties = Arc::new(PlanProperties::new(
             EquivalenceProperties::new(schema.clone()),
             Partitioning::UnknownPartitioning(tickets.len().max(1)),
