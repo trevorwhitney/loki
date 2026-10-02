@@ -1,4 +1,4 @@
-.PHONY: generate bench list run run-debug stream grafana grafana-stop discover remote-test generate-k6 gotestsum-remote build-correctness-metrics
+.PHONY: generate bench list run run-debug stream grafana grafana-stop discover remote-test generate-k6 gotestsum-remote build-correctness-metrics flight-server sql compare
 
 # Load local secrets from .env (ignored by git).
 # Copy .env.template → .env and fill in real values.
@@ -249,3 +249,33 @@ endif
 		-password "$(LOKI_PASSWORD)" \
 		-metadata-dir $(METADATA_DIR) \
 		-remote-range-type $(RANGE_TYPE)
+
+#####################################
+# DataFusion SQL over data objects  #
+#####################################
+
+DATAOBJ_DIR ?= data/storage/dataobj
+FLIGHT_ADDR ?= 127.0.0.1:8815
+
+# flight-server serves the generated data objects over Arrow Flight so that
+# external query engines can scan them. Run `make generate` first.
+flight-server:
+	@echo "Serving $(DATAOBJ_DIR) over Arrow Flight on $(FLIGHT_ADDR)..."
+	@go run ../../../tools/dataobj-flight -dir $(DATAOBJ_DIR) -addr $(FLIGHT_ADDR)
+
+# sql runs a DataFusion SQL query against the running flight-server, e.g.
+#   make sql QUERY="SELECT service_name, count(*) FROM logs GROUP BY 1"
+# Requires a Rust toolchain and protoc; the first build takes a few minutes.
+sql:
+	@cd ../../../tools/dataobj-sql && cargo run --quiet --release -- --addr http://$(FLIGHT_ADDR) "$(QUERY)"
+
+# compare runs the storage-equality correctness test for the fast suite across
+# the chunk baseline, the v2 engine, and the Flight/DataFusion POC, and writes
+# a per-query latency report. Requires generated data (make generate) and a
+# Rust toolchain (or DATAOBJ_SQL_BIN pointing at a built dataobj-sql).
+REPORT ?= build/storage-equality-report.md
+.PHONY: compare
+compare:
+	@mkdir -p $(dir $(REPORT))
+	@go test -count=1 -v -timeout 2h -run 'TestStorageEquality/fast' . -slow-tests -flight-sql -report $(REPORT)
+	@echo "Report written to $(REPORT)"

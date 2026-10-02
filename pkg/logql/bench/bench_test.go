@@ -34,6 +34,8 @@ var (
 	slowTests      = flag.Bool("slow-tests", false, "run slow tests")
 	rangeType      = flag.String("range-type", "range", "query range type: instant or range (only affects metric queries)")
 	includeSkipped = flag.Bool("include-skipped", false, "include skipped queries in test execution")
+	flightSQL      = flag.Bool("flight-sql", false, "also run TestStorageEquality against the dataobj-flight-sql store (needs cargo or DATAOBJ_SQL_BIN)")
+	reportPath     = flag.String("report", "", "write a per-query latency comparison report in markdown to this path")
 )
 
 const testTenant = "test-tenant"
@@ -124,6 +126,15 @@ func setupBenchmarkWithStore(tb testing.TB, storeType string, dir string) logql.
 		}
 
 		return store.engine
+	case StoreFlightSQL:
+		store, err := NewFlightSQLStore(dir, level.NewFilter(log.NewLogfmtLogger(os.Stdout), level.AllowInfo()))
+		if err != nil {
+			tb.Fatal(err)
+		}
+		tb.Cleanup(func() {
+			_ = store.Close()
+		})
+		return store.Engine()
 	case StoreChunk:
 		reg := prometheus.NewRegistry()
 		store, err := NewChunkStoreWithRegisterer(dir, testTenant, reg)
@@ -250,7 +261,14 @@ func TestStorageEquality(t *testing.T) {
 		stores    []*store
 		baseStore *store
 	)
-	for _, name := range allStores {
+	storeNames := slices.Clone(allStores)
+	if *flightSQL {
+		storeNames = append(storeNames, StoreFlightSQL)
+	}
+
+	report := &reportCollector{}
+
+	for _, name := range storeNames {
 		store := generateStore(name)
 		stores = append(stores, store)
 
@@ -303,17 +321,27 @@ func TestStorageEquality(t *testing.T) {
 					}
 
 					var actual, expected logqlmodel.Result
+					var actualDuration, expectedDuration time.Duration
+
+					defer func() {
+						report.add(reportRow{Case: baseCase, Store: store.Name, Status: testStatus(t), Duration: actualDuration, Result: actual})
+						report.add(reportRow{Case: baseCase, Store: baseStore.Name, Status: "pass", Duration: expectedDuration, Result: expected})
+					}()
 
 					g, ctx := errgroup.WithContext(ctx)
 
 					g.Go(func() error {
+						start := time.Now()
 						result, err := store.Engine.Query(params).Exec(ctx)
+						actualDuration = time.Since(start)
 						actual = result
 						return err
 					})
 
 					g.Go(func() error {
+						start := time.Now()
 						result, err := baseStore.Engine.Query(params).Exec(ctx)
+						expectedDuration = time.Since(start)
 						expected = result
 						return err
 					})
@@ -362,6 +390,11 @@ func TestStorageEquality(t *testing.T) {
 				})
 			})
 		}
+	}
+
+	if *reportPath != "" {
+		require.NoError(t, report.write(*reportPath, storeNames))
+		t.Logf("Wrote comparison report to %s", *reportPath)
 	}
 }
 
