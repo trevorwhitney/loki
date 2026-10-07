@@ -29,6 +29,8 @@ use datafusion_postgres::pgwire::types::format::FormatOptions;
 use datafusion_postgres::{serve_with_hooks, QueryHook, ServerOptions};
 use log::{debug, info};
 
+use crate::metrics::Metrics;
+
 /// Catalog name DataFusion uses by default; `pg_catalog` is registered under
 /// it and `current_database()` reports it.
 const CATALOG: &str = "datafusion";
@@ -39,6 +41,7 @@ pub async fn serve(
     addr: &str,
     tenant: &str,
     max_connections: usize,
+    metrics: Option<Metrics>,
 ) -> anyhow::Result<()> {
     let (host, port) = addr
         .rsplit_once(':')
@@ -55,7 +58,7 @@ pub async fn serve(
 
     // serve_with_hooks replaces the default hook list, so the built-in ones
     // (cursors, SET/SHOW, BEGIN/COMMIT) must be listed again explicitly.
-    let hooks: Vec<Arc<dyn QueryHook>> = vec![
+    let mut hooks: Vec<Arc<dyn QueryHook>> = vec![
         Arc::new(TenantHook {
             tenant: tenant.to_string(),
         }),
@@ -64,6 +67,11 @@ pub async fn serve(
         Arc::new(SetShowHook),
         Arc::new(TransactionStatementHook),
     ];
+    if let Some(metrics) = metrics {
+        // Last: it takes over plain queries that nothing above handled, so
+        // that their full execution can be timed.
+        hooks.push(Arc::new(TimedQueryHook { metrics }));
+    }
 
     let opts = ServerOptions::new()
         .with_host(host.to_string())
@@ -121,6 +129,103 @@ impl QueryHook for TenantHook {
         client: &(dyn ClientInfo + Send + Sync),
     ) -> Option<PgWireResult<LogicalPlan>> {
         self.observe(client, "extended parse");
+        None
+    }
+
+    async fn handle_extended_query(
+        &self,
+        _statement: &Statement,
+        _logical_plan: &LogicalPlan,
+        _params: &ParamValues,
+        _session_context: &SessionContext,
+        _client: &mut dyn HookClient,
+    ) -> Option<PgWireResult<Response>> {
+        None
+    }
+}
+
+/// Executes plain queries itself so that their whole lifetime can be
+/// measured. `datafusion-postgres` encodes a lazy stream and the scan work
+/// happens while pgwire drains it, out of reach of a hook, so this hook
+/// collects the result first (results here are aggregates or a LIMITed
+/// page; the heavy rows stay on the Flight servers) and hands pgwire an
+/// in-memory DataFrame. Only simple-protocol `SELECT`/`WITH` statements are
+/// taken; everything else falls through to the default path untimed.
+struct TimedQueryHook {
+    metrics: Metrics,
+}
+
+#[async_trait]
+impl QueryHook for TimedQueryHook {
+    async fn handle_simple_query(
+        &self,
+        statement: &Statement,
+        session_context: &SessionContext,
+        client: &mut dyn HookClient,
+    ) -> Option<PgWireResult<Response>> {
+        if !matches!(statement, Statement::Query(_)) {
+            return None;
+        }
+        let sql = statement.to_string();
+        let kind = Metrics::kind(&sql);
+        let format_options = Arc::new(FormatOptions::from_client_metadata(client.metadata()));
+        self.metrics.in_flight.inc();
+        let started = std::time::Instant::now();
+        let result = async {
+            let df = session_context
+                .sql(&sql)
+                .await
+                .map_err(|e| PgWireError::ApiError(Box::new(e)))?;
+            let schema = df.schema().inner().clone();
+            let batches = df
+                .collect()
+                .await
+                .map_err(|e| PgWireError::ApiError(Box::new(e)))?;
+            let rows: usize = batches.iter().map(|b| b.num_rows()).sum();
+            let df = session_context
+                .read_batches(batches)
+                .map_err(|e| PgWireError::ApiError(Box::new(e)))?;
+            let _ = schema; // the in-memory frame carries the executed schema
+            encode_dataframe(df, &Format::UnifiedText, Some(format_options))
+                .await
+                .map(|r| (Response::Query(r), rows))
+        }
+        .await;
+        let elapsed = started.elapsed().as_secs_f64();
+        self.metrics.in_flight.dec();
+        self.metrics
+            .statement_duration
+            .with_label_values(&[kind])
+            .observe(elapsed);
+        match result {
+            Ok((response, rows)) => {
+                self.metrics
+                    .statements
+                    .with_label_values(&[kind, "ok"])
+                    .inc();
+                self.metrics
+                    .result_rows
+                    .with_label_values(&[kind])
+                    .observe(rows as f64);
+                debug!("{kind} statement: {rows} rows in {elapsed:.3}s");
+                Some(Ok(response))
+            }
+            Err(e) => {
+                self.metrics
+                    .statements
+                    .with_label_values(&[kind, "error"])
+                    .inc();
+                Some(Err(e))
+            }
+        }
+    }
+
+    async fn handle_extended_parse_query(
+        &self,
+        _sql: &Statement,
+        _session_context: &SessionContext,
+        _client: &(dyn ClientInfo + Send + Sync),
+    ) -> Option<PgWireResult<LogicalPlan>> {
         None
     }
 

@@ -119,6 +119,10 @@ type ArchiveConfig struct {
 	// BatchRows bounds the rows per record batch. Defaults to 4096.
 	BatchRows int
 
+	// Metrics receives per-object fetch and decode accounting. Unregistered
+	// collectors are used when nil.
+	Metrics *Metrics
+
 	Logger log.Logger
 }
 
@@ -149,6 +153,9 @@ func (c *ArchiveConfig) applyDefaults() {
 	}
 	if c.Logger == nil {
 		c.Logger = log.NewNopLogger()
+	}
+	if c.Metrics == nil {
+		c.Metrics = NewMetrics(nil)
 	}
 }
 
@@ -285,10 +292,13 @@ func (a *ArchiveSource) Plan(ctx context.Context, req *scanpb.ScanRequest) ([]*s
 		return nil, err
 	}
 
+	listStart := time.Now()
 	objects, err := a.listObjects(ctx, lower, upper)
 	if err != nil {
 		return nil, err
 	}
+	a.cfg.Metrics.archiveListDuration.Observe(time.Since(listStart).Seconds())
+	a.cfg.Metrics.archiveObjectsListed.Add(float64(len(objects)))
 
 	var tickets []*scanpb.Ticket
 	for start := 0; start < len(objects); start += a.cfg.ObjectsPerTicket {

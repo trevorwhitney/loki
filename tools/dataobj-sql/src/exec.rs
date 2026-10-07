@@ -20,43 +20,86 @@ use datafusion::physical_plan::{
 use futures::stream::BoxStream;
 use futures::{StreamExt, TryStreamExt};
 
-use crate::provider::FlightClient;
+use crate::provider::ClientPool;
 
 type BatchStream = BoxStream<'static, Result<RecordBatch>>;
+
+/// One endpoint of a planned scan: the ticket and the servers that should
+/// serve it, most preferred first. No locations means "ask the planner".
+#[derive(Clone, Debug)]
+pub struct PlannedEndpoint {
+    pub ticket: Ticket,
+    pub locations: Vec<String>,
+}
 
 /// Total bytes of Flight data received since the counter was last reset. Used
 /// by the CLI to report wire size per statement; statements run sequentially.
 pub static WIRE_BYTES: AtomicU64 = AtomicU64::new(0);
 
-/// Reads a scan planned by the server: each Flight endpoint becomes one
-/// DataFusion partition, fetched with DoGet when the partition executes.
+/// Reads a scan planned by the server. Endpoints are dealt round-robin into
+/// at most `max_partitions` DataFusion partitions; each partition fetches its
+/// endpoints one after another with DoGet from the endpoint's first reachable
+/// location (or the planner). DataFusion executes every partition at once, so
+/// the partition count is the number of concurrent scans the servers see.
 pub struct DataobjFlightExec {
-    client: FlightClient,
+    pool: ClientPool,
     schema: SchemaRef,
-    tickets: Vec<Ticket>,
+    groups: Vec<Vec<PlannedEndpoint>>,
+    endpoints: usize,
     properties: Arc<PlanProperties>,
 }
 
 impl DataobjFlightExec {
-    pub fn new(client: FlightClient, schema: SchemaRef, tickets: Vec<Ticket>) -> Self {
+    /// `max_partitions` of 0 keeps one partition per endpoint.
+    pub fn new(
+        pool: ClientPool,
+        schema: SchemaRef,
+        endpoints: Vec<PlannedEndpoint>,
+        max_partitions: usize,
+    ) -> Self {
+        let total = endpoints.len();
+        let partitions = if max_partitions == 0 {
+            total
+        } else {
+            total.min(max_partitions)
+        }
+        .max(1);
+        let mut groups: Vec<Vec<PlannedEndpoint>> = vec![Vec::new(); partitions];
+        for (i, endpoint) in endpoints.into_iter().enumerate() {
+            groups[i % partitions].push(endpoint);
+        }
         let properties = Arc::new(PlanProperties::new(
             EquivalenceProperties::new(schema.clone()),
-            Partitioning::UnknownPartitioning(tickets.len().max(1)),
+            Partitioning::UnknownPartitioning(partitions),
             EmissionType::Incremental,
             Boundedness::Bounded,
         ));
         Self {
-            client,
+            pool,
             schema,
-            tickets,
+            groups,
+            endpoints: total,
             properties,
         }
+    }
+
+    fn located(&self) -> usize {
+        self.groups
+            .iter()
+            .flatten()
+            .filter(|e| !e.locations.is_empty())
+            .count()
     }
 }
 
 impl fmt::Debug for DataobjFlightExec {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "DataobjFlightExec(partitions={})", self.tickets.len())
+        write!(
+            f,
+            "DataobjFlightExec(partitions={}, endpoints={})",
+            self.groups.len(),
+            self.endpoints
+        )
     }
 }
 
@@ -70,8 +113,10 @@ impl DisplayAs for DataobjFlightExec {
             .collect();
         write!(
             f,
-            "DataobjFlightExec: partitions={}, projection=[{}]",
-            self.tickets.len(),
+            "DataobjFlightExec: partitions={}, endpoints={}, located={}, projection=[{}]",
+            self.groups.len(),
+            self.endpoints,
+            self.located(),
             columns.join(", ")
         )
     }
@@ -102,40 +147,64 @@ impl ExecutionPlan for DataobjFlightExec {
         partition: usize,
         _context: Arc<TaskContext>,
     ) -> Result<SendableRecordBatchStream> {
-        let ticket = self.tickets.get(partition).cloned();
+        let group = self.groups.get(partition).cloned().unwrap_or_default();
         let schema = self.schema.clone();
-        let mut client = self.client.clone();
+        let pool = self.pool.clone();
 
-        let stream = futures::stream::once(async move {
-            let Some(ticket) = ticket else {
-                return Ok::<BatchStream, DataFusionError>(futures::stream::empty().boxed());
-            };
-
-            let response = client.do_get(ticket).await.map_err(external)?.into_inner();
-            let counted = response.map_ok(|data| {
-                let n = data.data_header.len() + data.data_body.len() + data.app_metadata.len();
-                WIRE_BYTES.fetch_add(n as u64, Ordering::Relaxed);
-                data
-            });
-            let batches =
-                FlightRecordBatchStream::new_from_flight_data(counted.map_err(FlightError::from));
-
-            let stream: BatchStream = batches
-                .map(move |result| {
-                    result
-                        .map_err(external)
-                        .and_then(|batch| conform(batch, &schema))
-                })
-                .boxed();
-            Ok(stream)
-        })
-        .try_flatten();
+        // flat_map drives one endpoint stream at a time, so a partition is
+        // one DoGet in flight.
+        let stream = futures::stream::iter(group)
+            .flat_map(move |endpoint| endpoint_stream(pool.clone(), schema.clone(), endpoint));
 
         Ok(Box::pin(RecordBatchStreamAdapter::new(
             self.schema.clone(),
             stream,
         )))
     }
+}
+
+/// The record batches of one endpoint: DoGet at the first location that
+/// answers, then the planner. A failure here is the DoGet call itself
+/// (connection refused, unknown ticket); errors mid-stream are not retried.
+fn endpoint_stream(pool: ClientPool, schema: SchemaRef, endpoint: PlannedEndpoint) -> BatchStream {
+    futures::stream::once(async move {
+        let mut candidates = pool.candidates(&endpoint.locations).into_iter();
+        let response = loop {
+            let Some((location, mut client)) = candidates.next() else {
+                return Err(DataFusionError::Internal(
+                    "no Flight client to serve endpoint".to_string(),
+                ));
+            };
+            match client.do_get(endpoint.ticket.clone()).await {
+                Ok(response) => break response.into_inner(),
+                Err(status) => {
+                    let at = location.as_deref().unwrap_or("planner");
+                    if candidates.len() == 0 {
+                        return Err(external(status));
+                    }
+                    log::warn!("DoGet at {at} failed, trying next location: {status}");
+                }
+            }
+        };
+        let counted = response.map_ok(|data| {
+            let n = data.data_header.len() + data.data_body.len() + data.app_metadata.len();
+            WIRE_BYTES.fetch_add(n as u64, Ordering::Relaxed);
+            data
+        });
+        let batches =
+            FlightRecordBatchStream::new_from_flight_data(counted.map_err(FlightError::from));
+
+        let stream: BatchStream = batches
+            .map(move |result| {
+                result
+                    .map_err(external)
+                    .and_then(|batch| conform(batch, &schema))
+            })
+            .boxed();
+        Ok::<BatchStream, DataFusionError>(stream)
+    })
+    .try_flatten()
+    .boxed()
 }
 
 fn external<E: std::error::Error + Send + Sync + 'static>(err: E) -> DataFusionError {

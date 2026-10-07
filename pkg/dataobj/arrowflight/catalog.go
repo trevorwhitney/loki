@@ -1,12 +1,14 @@
 package arrowflight
 
 import (
+	"container/list"
 	"context"
 	"errors"
 	"fmt"
 	"io"
 	"maps"
 	"slices"
+	"strings"
 	"sync"
 
 	"github.com/apache/arrow-go/v18/arrow/array"
@@ -37,6 +39,7 @@ type streamsTable struct {
 	ids    []int64
 	labels []map[string]string // parallel to ids
 	byID   map[int64]int
+	bytes  int64 // estimated memory footprint, for the cache bound
 }
 
 // label returns the value of the named label for the given stream.
@@ -67,23 +70,42 @@ type objectCache struct {
 	bucket        objstore.BucketReader
 	logger        log.Logger
 	prefetchBytes int64
+	// maxObjects bounds the opened objects kept by a cache that discovers
+	// objects per request (the metastore catalog); the walking catalog holds
+	// all of its objects regardless.
+	maxObjects int
+	// maxStreamsBytes bounds the estimated size of the cached streams tables.
+	maxStreamsBytes int64
 
 	mu           sync.Mutex
 	objects      map[string]*objectInfo
-	streamsCache map[string]*streamsTable // keyed by object path and section index
+	streamsCache map[string]*list.Element // key -> *streamsEntry in streamsLRU
+	streamsLRU   *list.List               // front is most recently used
+	streamsBytes int64
 }
 
-// maxCachedObjects bounds the number of opened objects kept by a cache that
-// discovers objects per request (the metastore catalog); the walking catalog
-// holds all of its objects regardless.
-const maxCachedObjects = 1024
+type streamsEntry struct {
+	key   string
+	table *streamsTable
+}
+
+// Defaults for the caches. A tenant with hundreds of thousands of streams
+// per object makes a full streams table tens of MB, so the byte bound, not
+// the object count, is what keeps a wide scan inside the pod's memory.
+const (
+	DefaultMaxCachedObjects  = 256
+	DefaultStreamsCacheBytes = 256 << 20
+)
 
 func newObjectCache(bucket objstore.BucketReader, logger log.Logger) *objectCache {
 	return &objectCache{
-		bucket:       bucket,
-		logger:       logger,
-		objects:      make(map[string]*objectInfo),
-		streamsCache: make(map[string]*streamsTable),
+		bucket:          bucket,
+		logger:          logger,
+		maxObjects:      DefaultMaxCachedObjects,
+		maxStreamsBytes: DefaultStreamsCacheBytes,
+		objects:         make(map[string]*objectInfo),
+		streamsCache:    make(map[string]*list.Element),
+		streamsLRU:      list.New(),
 	}
 }
 
@@ -112,9 +134,11 @@ func (oc *objectCache) object(ctx context.Context, path string) (*objectInfo, er
 
 	oc.mu.Lock()
 	defer oc.mu.Unlock()
-	if len(oc.objects) >= maxCachedObjects {
+	if oc.maxObjects > 0 && len(oc.objects) >= oc.maxObjects {
 		oc.objects = make(map[string]*objectInfo)
-		oc.streamsCache = make(map[string]*streamsTable)
+		oc.streamsCache = make(map[string]*list.Element)
+		oc.streamsLRU.Init()
+		oc.streamsBytes = 0
 	}
 	if existing, ok := oc.objects[path]; ok {
 		return existing, nil
@@ -256,9 +280,25 @@ func (c *Catalog) Partitions(table string) ([]Partition, error) {
 	return parts, nil
 }
 
+// streamsWant narrows what a streams table is loaded for: only the named
+// label columns are read (nil means all), and when IDs are given only those
+// streams are kept. A scan whose stream IDs the metastore already resolved
+// needs a table of a few streams and one or two labels, not the whole
+// section, which for a large tenant is tens of MB per object.
+type streamsWant struct {
+	ids    []int64
+	labels []string
+}
+
+func (w streamsWant) cacheKey(path string, section int) string {
+	return fmt.Sprintf("%s#%d|%s", path, section, strings.Join(w.labels, ","))
+}
+
 // streamsFor returns the in-memory streams table of the given tenant within
-// the data object, loading and caching it on first use.
-func (c *objectCache) streamsFor(ctx context.Context, info *objectInfo, tenant string) (*streamsTable, error) {
+// the data object. Tables without an ID filter are cached (bounded by
+// maxStreamsBytes, least recently used first); filtered ones are built per
+// scan, they are small and specific to the ticket.
+func (c *objectCache) streamsFor(ctx context.Context, info *objectInfo, tenant string, want streamsWant) (*streamsTable, error) {
 	var (
 		streamsSec *dataobj.Section
 		streamsIdx int
@@ -273,29 +313,60 @@ func (c *objectCache) streamsFor(ctx context.Context, info *objectInfo, tenant s
 		return nil, fmt.Errorf("data object %s has no streams section for tenant %q", info.Path, tenant)
 	}
 
-	key := fmt.Sprintf("%s#%d", info.Path, streamsIdx)
-
-	c.mu.Lock()
-	st, ok := c.streamsCache[key]
-	c.mu.Unlock()
-	if ok {
-		return st, nil
+	cacheable := len(want.ids) == 0
+	key := want.cacheKey(info.Path, streamsIdx)
+	if cacheable {
+		c.mu.Lock()
+		if el, ok := c.streamsCache[key]; ok {
+			c.streamsLRU.MoveToFront(el)
+			st := el.Value.(*streamsEntry).table
+			c.mu.Unlock()
+			return st, nil
+		}
+		c.mu.Unlock()
 	}
 
-	st, err := loadStreamsTable(ctx, streamsSec)
+	st, err := loadStreamsTable(ctx, streamsSec, want)
 	if err != nil {
 		return nil, fmt.Errorf("loading streams section of %s: %w", info.Path, err)
 	}
-	c.mu.Lock()
-	c.streamsCache[key] = st
-	c.mu.Unlock()
+	if cacheable {
+		c.mu.Lock()
+		if _, ok := c.streamsCache[key]; !ok {
+			c.streamsCache[key] = c.streamsLRU.PushFront(&streamsEntry{key: key, table: st})
+			c.streamsBytes += st.bytes
+			for c.maxStreamsBytes > 0 && c.streamsBytes > c.maxStreamsBytes && c.streamsLRU.Len() > 1 {
+				el := c.streamsLRU.Back()
+				e := el.Value.(*streamsEntry)
+				c.streamsLRU.Remove(el)
+				delete(c.streamsCache, e.key)
+				c.streamsBytes -= e.table.bytes
+			}
+		}
+		c.mu.Unlock()
+	}
 	return st, nil
 }
 
-func loadStreamsTable(ctx context.Context, sec *dataobj.Section) (*streamsTable, error) {
+func loadStreamsTable(ctx context.Context, sec *dataobj.Section, want streamsWant) (*streamsTable, error) {
 	ss, err := streams.Open(ctx, sec)
 	if err != nil {
 		return nil, err
+	}
+
+	var wantLabels map[string]struct{}
+	if want.labels != nil {
+		wantLabels = make(map[string]struct{}, len(want.labels))
+		for _, l := range want.labels {
+			wantLabels[l] = struct{}{}
+		}
+	}
+	var keep map[int64]struct{}
+	if len(want.ids) > 0 {
+		keep = make(map[int64]struct{}, len(want.ids))
+		for _, id := range want.ids {
+			keep[id] = struct{}{}
+		}
 	}
 
 	var (
@@ -307,6 +378,11 @@ func loadStreamsTable(ctx context.Context, sec *dataobj.Section) (*streamsTable,
 		case streams.ColumnTypeStreamID:
 			idCol = col
 		case streams.ColumnTypeLabel:
+			if wantLabels != nil {
+				if _, ok := wantLabels[col.Name]; !ok {
+					continue
+				}
+			}
 			labelCols = append(labelCols, col)
 		}
 	}
@@ -329,15 +405,24 @@ func loadStreamsTable(ctx context.Context, sec *dataobj.Section) (*streamsTable,
 		if rec != nil {
 			ids := rec.Column(0).(*array.Int64)
 			for r := range ids.Len() {
+				id := ids.Value(r)
+				if keep != nil {
+					if _, ok := keep[id]; !ok {
+						continue
+					}
+				}
 				lbls := make(map[string]string, len(labelCols))
+				st.bytes += 48 // id, index entry, map header
 				for j, col := range labelCols {
 					arr := rec.Column(j + 1).(*array.String)
 					if arr.IsValid(r) {
-						lbls[col.Name] = arr.Value(r)
+						v := arr.Value(r)
+						lbls[col.Name] = v
+						st.bytes += int64(len(col.Name) + len(v) + 32)
 					}
 				}
-				st.byID[ids.Value(r)] = len(st.ids)
-				st.ids = append(st.ids, ids.Value(r))
+				st.byID[id] = len(st.ids)
+				st.ids = append(st.ids, id)
 				st.labels = append(st.labels, lbls)
 			}
 			rec.Release()

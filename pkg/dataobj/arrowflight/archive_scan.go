@@ -1,6 +1,7 @@
 package arrowflight
 
 import (
+	"bytes"
 	"compress/gzip"
 	"context"
 	"fmt"
@@ -44,33 +45,66 @@ func (r *archiveRow) metadata(key string) (string, bool) {
 	return v, ok
 }
 
+// archiveObjectStats accounts for one object read.
+type archiveObjectStats struct {
+	compressedBytes   int64
+	uncompressedBytes int64
+}
+
 // readObject fetches, decompresses, decodes and normalises one object.
 func (a *ArchiveSource) readObject(ctx context.Context, name string) ([]archiveRow, error) {
+	rows, _, err := a.readObjectStats(ctx, name)
+	return rows, err
+}
+
+// readObjectStats is readObject with the compressed and uncompressed sizes
+// of the object, for callers that account for bytes read per query.
+func (a *ArchiveSource) readObjectStats(ctx context.Context, name string) ([]archiveRow, archiveObjectStats, error) {
+	var st archiveObjectStats
 	select {
 	case a.sem <- struct{}{}:
 	case <-ctx.Done():
-		return nil, ctx.Err()
+		return nil, st, ctx.Err()
 	}
 	defer func() { <-a.sem }()
 
+	// Fetch the whole compressed object first so fetch (network) and decode
+	// (CPU) are accounted separately; objects are small.
+	fetchStart := time.Now()
 	rc, err := a.cfg.Bucket.Get(ctx, name)
 	if err != nil {
-		return nil, err
+		return nil, st, err
 	}
-	defer rc.Close()
-	gz, err := gzip.NewReader(rc)
+	compressed, err := io.ReadAll(rc)
+	_ = rc.Close()
 	if err != nil {
-		return nil, fmt.Errorf("gunzip: %w", err)
+		return nil, st, fmt.Errorf("reading object: %w", err)
+	}
+	m := a.cfg.Metrics
+	m.archiveFetchDuration.Observe(time.Since(fetchStart).Seconds())
+	m.archiveObjectsFetched.Inc()
+	m.archiveCompressedBytes.Add(float64(len(compressed)))
+	st.compressedBytes = int64(len(compressed))
+
+	decodeStart := time.Now()
+	gz, err := gzip.NewReader(bytes.NewReader(compressed))
+	if err != nil {
+		return nil, st, fmt.Errorf("gunzip: %w", err)
 	}
 	raw, err := io.ReadAll(gz)
 	if err != nil {
-		return nil, fmt.Errorf("gunzip: %w", err)
+		return nil, st, fmt.Errorf("gunzip: %w", err)
 	}
+	m.archiveUncompressedByte.Add(float64(len(raw)))
+	st.uncompressedBytes = int64(len(raw))
 	ld, err := (&plog.JSONUnmarshaler{}).UnmarshalLogs(raw)
 	if err != nil {
-		return nil, fmt.Errorf("decoding OTLP JSON: %w", err)
+		return nil, st, fmt.Errorf("decoding OTLP JSON: %w", err)
 	}
-	return a.normalize(ld)
+	rows, err := a.normalize(ld)
+	m.archiveDecodeDuration.Observe(time.Since(decodeStart).Seconds())
+	m.archiveRecordsDecoded.Add(float64(len(rows)))
+	return rows, st, err
 }
 
 // normalize applies Loki's OTLP-to-stream mapping to every record.
@@ -170,7 +204,7 @@ func (a *ArchiveSource) compileFilter(preds []*scanpb.Predicate) archiveFilter {
 		if !ok {
 			continue
 		}
-		p := p
+
 		switch {
 		case b.Kind == columnKindFixed && b.Source == ColumnTimestamp:
 			ns, ok := literalInt64(p.GetValues()[0])
@@ -308,11 +342,13 @@ func (s *archiveScanner) build(rows []archiveRow) []arrow.RecordBatch {
 		n = 0
 	}
 
+	matched := 0
 	for i := range rows {
 		r := &rows[i]
 		if !s.filter(r) {
 			continue
 		}
+		matched++
 		for fi, f := range s.schema.Fields() {
 			binding, _ := s.src.schema.binding(f.Name)
 			s.appendValue(b.Field(fi), binding, r)
@@ -323,6 +359,7 @@ func (s *archiveScanner) build(rows []archiveRow) []arrow.RecordBatch {
 		}
 	}
 	flush()
+	s.src.cfg.Metrics.archiveRecordsMatched.Add(float64(matched))
 	return out
 }
 

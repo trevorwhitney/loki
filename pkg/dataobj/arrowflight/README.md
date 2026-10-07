@@ -45,6 +45,75 @@ Predicates are a pruning hint. The server pushes down what it can and may
 return non-matching rows, so clients must re-apply every filter. The server
 never drops a matching row.
 
+### Locations and scaling out
+
+Every ticket is self-contained, so any server can serve any endpoint, and the
+server that plans a scan does not have to be the one that serves it. When a
+`Locator` is configured, `GetFlightInfo` puts the servers that should serve
+each endpoint on it as Flight `Location`s (`grpc+tcp://host:port`, or
+`grpc+tls://` when the gRPC server has TLS), most preferred first. Locations
+are a routing hint: a client that ignores them, or whose preferred location is
+down, can send the ticket to any server, including the one it planned on.
+
+Loki's `dataobj-flight` target gets its locator from a dskit ring when
+`-dataobj-flight.ring.enabled` is set (`dataobj_flight.ring` holds the usual
+ring options). Every instance joins the ring as both planner and scanner, so
+a client can plan on any of them. The object path of a ticket is hashed onto
+the ring, so all sections of one object land on the same replica set while the
+ring is stable and that replica's object cache stays warm. The ring's
+replication factor is the number of locations offered per endpoint; the
+client falls through them in order and then to the planner. The ring is
+served at `/dataobj-flight/ring`, and
+`loki_dataobj_flight_located_endpoints_total` counts endpoints that got
+locations.
+
+`tools/dataobj-sql` honors locations: it opens one lazy channel per distinct
+location, shared by every scan, and falls back to the planning connection
+when a located DoGet fails. `--ignore-locations` sends everything to `--addr`
+instead, for debugging or when `--addr` is a proxy that balances per request.
+The local `tools/dataobj-flight` binary has no ring; `-locations` stamps a
+fixed list on every endpoint so the client path can be exercised with two
+processes over the same directory.
+
+Note that a plain Kubernetes ClusterIP service in front of the pool does not
+spread load by itself: tonic keeps one HTTP/2 connection per channel, so every
+call from a client would pin to one pod. The ring and locations are what fan
+DoGet out.
+
+## Bounding fan-out and warming up
+
+A planned scan has one endpoint per section (or per group of archive
+objects), and DataFusion executes every partition of a plan at once. Left
+unbounded, a 24 h scan opens thousands of DoGet streams and memory on the
+servers grows with the plan rather than with their size; in the dev cell that
+OOM-killed every 4 GiB replica. Two bounds, both on by default:
+
+- `dataobj-sql --max-partitions N` (default 16) deals the endpoints round-robin
+  into at most N DataFusion partitions; each partition reads its endpoints one
+  after another, so N is the number of DoGet streams a query keeps open across
+  the pool.
+- `-dataobj-flight.max-concurrent-scans N` (default 16) is what one server
+  serves at once; further DoGets wait for a slot. `loki_dataobj_flight_scans_in_flight`
+  and `loki_dataobj_flight_scan_queue_duration_seconds` show whether the servers
+  or the client are the bottleneck.
+
+Memory also grows with the streams tables the server builds to join labels
+into log rows (one per object, a map per stream). A scan now loads only the
+label columns it projects or filters on and, when the metastore already
+resolved the ticket's stream IDs, only those streams; full tables are cached
+up to `-dataobj-flight.streams-cache-bytes` (256 MiB) and opened objects up to
+`-dataobj-flight.max-cached-objects` (256). Before this, a 24 h scan of a
+tenant with hundreds of thousands of streams per object held gigabytes of
+label maps and OOM-killed 8 GiB replicas with the scan bound in place.
+
+`-dataobj-flight.disk-cache.dir` (with `-dataobj-flight.disk-cache.max-size-bytes`,
+default 10 GiB) puts a read-through disk cache under every object store the
+target reads: data object pages, metastore index objects and archive objects.
+Entries are keyed by object and byte range, so a repeated query is served from
+local disk and its CPU is the decode cost with no object store traffic; the
+first run (cold) and the second (warm) bracket the cost of a query in place.
+Point it at an emptyDir in a cell; entries survive a container restart.
+
 ## Pushdown
 
 | SQL shape                                  | Server behaviour                                                     |
@@ -101,6 +170,11 @@ shows up as a skip. See `flight_sql_translate.go` for the exact rules and
 ## Not done yet
 
 - No pruning of whole sections by time range before handing out endpoints.
+- Schema is discovered once per process at startup; instances in a ring that
+  started at different times can disagree on label columns until restarted
+  (pin them with `-dataobj-flight.extra-labels` in the meantime).
+- No bound on concurrent data object scans per server; the client's
+  `target_partitions` is the only limit.
 - Label columns are plain `Utf8`; dictionary encoding would cut the wire size.
 - `limit` is carried in the request but ignored by the server.
 - Only a local filesystem bucket is wired up in `tools/dataobj-flight`.

@@ -52,6 +52,10 @@ type MetastoreCatalogConfig struct {
 
 	// PrefetchBytes is passed to dataobj.FromBucket when opening objects.
 	PrefetchBytes int64
+	// MaxCachedObjects and StreamsCacheBytes bound the object cache; 0 means
+	// the package defaults.
+	MaxCachedObjects  int
+	StreamsCacheBytes int64
 
 	Logger log.Logger
 }
@@ -90,7 +94,13 @@ func NewMetastoreCatalog(ctx context.Context, cfg MetastoreCatalogConfig) (*Meta
 		cfg:         cfg,
 		tables:      make(map[string]*TableSchema),
 	}
-	c.objectCache.prefetchBytes = cfg.PrefetchBytes
+	c.prefetchBytes = cfg.PrefetchBytes
+	if cfg.MaxCachedObjects > 0 {
+		c.maxObjects = cfg.MaxCachedObjects
+	}
+	if cfg.StreamsCacheBytes > 0 {
+		c.maxStreamsBytes = cfg.StreamsCacheBytes
+	}
 
 	labelNames, metadataKeys, err := c.discoverSchema(ctx)
 	if err != nil {

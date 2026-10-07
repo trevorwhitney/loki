@@ -100,14 +100,26 @@ func buildTestBucket(t *testing.T) objstore.Bucket {
 
 func startServer(t *testing.T) flight.Client {
 	t.Helper()
+	return startServerWithLocator(t, nil)
+}
+
+// startServerWithLocator starts a server over the test bucket; a non-nil
+// locator stamps planned endpoints with locations.
+func startServerWithLocator(t *testing.T, locator arrowflight.Locator) flight.Client {
+	t.Helper()
 	ctx := context.Background()
 
 	catalog, err := arrowflight.OpenCatalog(ctx, buildTestBucket(t), "objects", log.NewNopLogger())
 	require.NoError(t, err)
 
+	flightServer := arrowflight.NewServer(log.NewNopLogger(), catalog)
+	if locator != nil {
+		flightServer.WithLocator(locator)
+	}
+
 	srv := flight.NewServerWithMiddleware(nil)
 	require.NoError(t, srv.Init("127.0.0.1:0"))
-	srv.RegisterFlightService(arrowflight.NewServer(log.NewNopLogger(), catalog))
+	srv.RegisterFlightService(flightServer)
 	go func() { _ = srv.Serve() }()
 	t.Cleanup(srv.Shutdown)
 
@@ -370,5 +382,43 @@ func TestServer_ScanStreams(t *testing.T) {
 		})
 		require.Equal(t, int64(2), totalRows(recs))
 		require.Equal(t, map[string]int{"nginx": 1, "postgres": 1}, count(stringColumn(t, schema, recs, "app")))
+	})
+}
+
+func TestServer_GetFlightInfo_Locations(t *testing.T) {
+	ctx := context.Background()
+	req := &scanpb.ScanRequest{Table: arrowflight.TableLogs, Columns: []string{"message"}}
+	cmd, err := proto.Marshal(req)
+	require.NoError(t, err)
+	desc := &flight.FlightDescriptor{Type: flight.DescriptorCMD, Cmd: cmd}
+
+	t.Run("without a locator endpoints have no locations", func(t *testing.T) {
+		client := startServer(t)
+		info, err := client.GetFlightInfo(ctx, desc)
+		require.NoError(t, err)
+		require.NotEmpty(t, info.Endpoint)
+		for _, ep := range info.Endpoint {
+			require.Empty(t, ep.Location)
+		}
+	})
+
+	t.Run("a locator's URIs are put on every endpoint, in order", func(t *testing.T) {
+		want := []string{"grpc+tcp://10.0.0.1:9095", "grpc+tcp://10.0.0.2:9095"}
+		client := startServerWithLocator(t, arrowflight.StaticLocator{Locations: want})
+
+		info, err := client.GetFlightInfo(ctx, desc)
+		require.NoError(t, err)
+		require.NotEmpty(t, info.Endpoint)
+		for _, ep := range info.Endpoint {
+			var got []string
+			for _, loc := range ep.Location {
+				got = append(got, loc.Uri)
+			}
+			require.Equal(t, want, got)
+		}
+
+		// Locations are a hint: the planning server still serves the ticket.
+		_, recs := scan(t, client, req)
+		require.Equal(t, int64(18), totalRows(recs))
 	})
 }

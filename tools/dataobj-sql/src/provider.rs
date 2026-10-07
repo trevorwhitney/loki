@@ -1,10 +1,11 @@
 //! DataFusion `TableProvider` backed by the Loki data object Flight server.
 
+use std::collections::HashMap;
 use std::fmt;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use arrow_flight::flight_service_client::FlightServiceClient;
-use arrow_flight::{FlightDescriptor, Ticket};
+use arrow_flight::FlightDescriptor;
 use async_trait::async_trait;
 use datafusion::arrow::datatypes::{Schema, SchemaRef};
 use datafusion::catalog::{Session, TableProvider};
@@ -19,7 +20,7 @@ use tonic::service::Interceptor;
 use tonic::transport::Channel;
 use tonic::{Request, Status};
 
-use crate::exec::DataobjFlightExec;
+use crate::exec::{DataobjFlightExec, PlannedEndpoint};
 use crate::filters::to_predicate;
 use crate::scanpb::ScanRequest;
 
@@ -52,11 +53,102 @@ impl Interceptor for TenantInterceptor {
     }
 }
 
+/// Flight clients for the planning server and for every server a planned
+/// endpoint has named as a location.
+///
+/// GetFlightInfo goes to the planning server, the one connection the process
+/// is configured with. When the server runs in ring mode each endpoint it
+/// returns carries the locations of the ring members that should serve it;
+/// DoGet for that endpoint goes to the first of them that answers, and to the
+/// planning connection when none does. Channels are opened lazily, once per
+/// location, and shared by every scan.
+#[derive(Clone)]
+pub struct ClientPool {
+    planner: FlightClient,
+    tenant: TenantInterceptor,
+    honor_locations: bool,
+    located: Arc<Mutex<HashMap<String, FlightClient>>>,
+}
+
+impl ClientPool {
+    /// Wraps the planning connection. With `honor_locations` false every
+    /// call goes to it, whatever the server says.
+    pub fn new(planner: FlightClient, tenant: TenantInterceptor, honor_locations: bool) -> Self {
+        Self {
+            planner,
+            tenant,
+            honor_locations,
+            located: Arc::new(Mutex::new(HashMap::new())),
+        }
+    }
+
+    /// The planning connection.
+    pub fn planner(&self) -> FlightClient {
+        self.planner.clone()
+    }
+
+    /// Clients to try for an endpoint, most preferred first. The planning
+    /// connection is always last so an endpoint whose locations are all
+    /// unreachable, or unparseable, still gets served. The label names the
+    /// location for logging, `None` for the planning connection.
+    pub fn candidates(&self, locations: &[String]) -> Vec<(Option<String>, FlightClient)> {
+        let mut out = Vec::with_capacity(locations.len() + 1);
+        if self.honor_locations {
+            for uri in locations {
+                if let Some(client) = self.client_for(uri) {
+                    out.push((Some(uri.clone()), client));
+                }
+            }
+        }
+        out.push((None, self.planner.clone()));
+        out
+    }
+
+    fn client_for(&self, uri: &str) -> Option<FlightClient> {
+        let endpoint = flight_location_to_http(uri)?;
+        let mut located = self.located.lock().expect("client pool poisoned");
+        if let Some(client) = located.get(&endpoint) {
+            return Some(client.clone());
+        }
+        let channel = match Channel::from_shared(endpoint.clone()) {
+            Ok(builder) => builder.connect_lazy(),
+            Err(e) => {
+                log::warn!("ignoring Flight location {uri}: {e}");
+                return None;
+            }
+        };
+        let client = FlightServiceClient::with_interceptor(channel, self.tenant.clone())
+            .max_decoding_message_size(usize::MAX);
+        located.insert(endpoint, client.clone());
+        Some(client)
+    }
+}
+
+/// Maps a Flight location URI (`grpc+tcp://host:port`, `grpc+tls://host:port`,
+/// `grpc://host:port`) to the `http(s)://` form tonic connects to. Other
+/// schemes are not supported and yield `None`.
+fn flight_location_to_http(uri: &str) -> Option<String> {
+    if let Some(rest) = uri.strip_prefix("grpc+tls://") {
+        return Some(format!("https://{rest}"));
+    }
+    for scheme in ["grpc+tcp://", "grpc://"] {
+        if let Some(rest) = uri.strip_prefix(scheme) {
+            return Some(format!("http://{rest}"));
+        }
+    }
+    if uri.starts_with("http://") || uri.starts_with("https://") {
+        return Some(uri.to_string());
+    }
+    log::warn!("ignoring Flight location with unsupported scheme: {uri}");
+    None
+}
+
 /// A table served by `tools/dataobj-flight` or Loki's dataobj-flight target.
 pub struct DataobjTable {
     name: String,
     schema: SchemaRef,
-    client: FlightClient,
+    pool: ClientPool,
+    max_partitions: usize,
 }
 
 impl fmt::Debug for DataobjTable {
@@ -69,15 +161,18 @@ impl fmt::Debug for DataobjTable {
 }
 
 impl DataobjTable {
-    /// Fetches the table schema from the server with GetSchema.
-    pub async fn try_new(mut client: FlightClient, name: &str) -> anyhow::Result<Self> {
+    /// Fetches the table schema from the planning server with GetSchema.
+    /// `max_partitions` bounds the concurrent DoGet streams of one scan
+    /// (see [`DataobjFlightExec`]); 0 means one per endpoint.
+    pub async fn try_new(pool: ClientPool, name: &str, max_partitions: usize) -> anyhow::Result<Self> {
         let descriptor = FlightDescriptor::new_path(vec![name.to_string()]);
-        let result = client.get_schema(descriptor).await?.into_inner();
+        let result = pool.planner().get_schema(descriptor).await?.into_inner();
         let schema: Schema = (&result).try_into()?;
         Ok(Self {
             name: name.to_string(),
             schema: Arc::new(schema),
-            client,
+            pool,
+            max_partitions,
         })
     }
 
@@ -148,18 +243,34 @@ impl TableProvider for DataobjTable {
 
         let descriptor = FlightDescriptor::new_cmd(request.encode_to_vec());
         let info = self
-            .client
-            .clone()
+            .pool
+            .planner()
             .get_flight_info(descriptor)
             .await
             .map_err(|e| DataFusionError::External(Box::new(e)))?
             .into_inner();
 
-        let tickets: Vec<Ticket> = info.endpoint.into_iter().filter_map(|e| e.ticket).collect();
+        let endpoints: Vec<PlannedEndpoint> = info
+            .endpoint
+            .into_iter()
+            .filter_map(|e| {
+                let ticket = e.ticket?;
+                let locations = e.location.into_iter().map(|l| l.uri).collect();
+                Some(PlannedEndpoint { ticket, locations })
+            })
+            .collect();
+        let located = endpoints.iter().filter(|e| !e.locations.is_empty()).count();
+        log::debug!(
+            "planned {} endpoints for {} ({} with locations)",
+            endpoints.len(),
+            self.name,
+            located
+        );
         Ok(Arc::new(DataobjFlightExec::new(
-            self.client.clone(),
+            self.pool.clone(),
             projected_schema,
-            tickets,
+            endpoints,
+            self.max_partitions,
         )))
     }
 }

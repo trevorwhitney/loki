@@ -251,6 +251,48 @@ Converted push-request objects keep their Loki labels; native OTLP objects go
 through Loki's default resource-attribute promotion list (`ARCHIVE_LABELS`
 overrides it).
 
+### Measuring what a query costs
+
+The Flight server exports Prometheus metrics (`loki_dataobj_flight_*`, plus the objstore
+client's request counters) on `127.0.0.1:8825/metrics` locally and on the Loki HTTP port in a
+cell, where they are scraped every 30 s. `tools/sqlmeasure` measures a cell: it runs a query
+matrix through Grafana's query API via `gcx` (SQL against the dataobj-sql shadow datasource,
+the equivalent LogQL against the live Loki datasource), idles before and after every query so
+the Prometheus samples bracket it, and derives per-query and per-GB numbers with pluggable
+unit prices:
+
+```bash
+make sql-measure MEASURE_FROM=2026-09-16T00:00:00Z MEASURE_WINDOWS=6h,12h,24h MEASURE_SUITES=archive,logql
+go run ./tools/sqlmeasure -help      # datasources, jobs, prices, settle/slack, suites
+```
+
+Suites: `archive` (`archive_logs`), `logs` (data objects, scoped to the archived app so the
+two tables hold the same data), `logql` (the `logs` queries on the live path, measured on the
+querier and frontend jobs with the idle CPU rate subtracted), `join` (live x archive on the
+trace id). Cost is modelled as `CPU seconds x $/vCPU-h + object storage requests x $/1k +
+bytes x $/GB egress`, with memory (peak RSS x wall) as a separate column. To first order it is
+linear in bytes scanned and independent of speed; wall time and MB/s tell you how many cores a
+latency target needs, which sets fleet size rather than per-query cost. Volumes are reported
+in uncompressed bytes (what the live Loki path reports as bytes processed); for `logs` the
+proxy is Arrow bytes served, because data objects are read by column and page.
+
+The same numbers as a Grafana dashboard live in `tools/sqlmeasure/grafana` as gcx resources
+(folder + dashboard). They are pushed to the dev Grafana with
+`gcx --context dev resources push -p tools/sqlmeasure/grafana`; the baseline row reads the live
+Loki query path in the selected cell, the cost and speed rows read the shadow Flight job.
+
+Long runs should not depend on a laptop: `tools/sqlmeasure/k6` holds the same matrix as a k6
+script (`matrix.js`, using xk6-sql's Postgres driver for the gateway and HTTP for the
+query-frontend) and a Dockerfile for the runner image. deployment_tools' `sql-shadow.libsonnet`
+runs it as a Kubernetes Job in the cell (`sqlmeasure_enabled`, windows, suites, runs as
+knobs); `collect.sh` turns the runner log into JSONL for `sqlmeasure -recompute`.
+
+Scan fan-out is bounded on both ends: `dataobj-sql --max-partitions` (default 16) is the
+number of DoGet streams one query keeps open across the Flight servers, and
+`-dataobj-flight.max-concurrent-scans` (default 16) is what one server serves at once.
+`-dataobj-flight.disk-cache.dir` turns on a read-through disk cache of object store reads so
+a repeated query measures decode CPU without object store traffic (cold run, then warm run).
+
 Useful knobs: `FLIGHT_FLAGS=-v make sql-server` logs every scan the Flight
 server plans, including the pushed-down predicates;
 `RUST_LOG=datafusion_postgres=debug,dataobj_sql=debug` on `dataobj-sql` logs every

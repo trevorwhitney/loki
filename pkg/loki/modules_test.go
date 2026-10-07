@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/grafana/dskit/flagext"
+	"github.com/grafana/dskit/kv/memberlist"
 	"github.com/prometheus/common/model"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -309,4 +310,71 @@ func minimalWorkingConfig(t *testing.T, dir, target string, cfgTransformers ...f
 	}
 
 	return cfg
+}
+
+// TestMemberlistKVWiredIntoAllRings checks that initMemberlistKV hands the
+// memberlist KV to every ring config. A ring whose config is left out panics
+// in dskit's kv client as soon as it is configured with store=memberlist, which
+// is what happened to the dataobj-flight ring.
+func TestMemberlistKVWiredIntoAllRings(t *testing.T) {
+	dir := t.TempDir()
+	prepareGlobalMetricsRegistry(t)
+
+	cfg := minimalWorkingConfig(t, dir, MemberlistKV, func(cfg *Config) {
+		cfg.MemberlistKV.TCPTransport.BindPort = 0
+	})
+	c, err := New(cfg)
+	require.NoError(t, err)
+
+	services, err := c.ModuleManager.InitModuleServices(MemberlistKV)
+	defer func() {
+		for _, service := range services {
+			service.StopAsync()
+		}
+	}()
+	require.NoError(t, err)
+
+	for name, getKV := range map[string]func() (*memberlist.KV, error){
+		"compactor":              c.Cfg.CompactorConfig.CompactorRing.KVStore.MemberlistKV,
+		"distributor":            c.Cfg.Distributor.DistributorRing.KVStore.MemberlistKV,
+		"index-gateway":          c.Cfg.IndexGateway.Ring.KVStore.MemberlistKV,
+		"ingester":               c.Cfg.Ingester.LifecyclerConfig.RingConfig.KVStore.MemberlistKV,
+		"query-scheduler":        c.Cfg.QueryScheduler.SchedulerRing.KVStore.MemberlistKV,
+		"ruler":                  c.Cfg.Ruler.Ring.KVStore.MemberlistKV,
+		"pattern-ingester":       c.Cfg.Pattern.LifecyclerConfig.RingConfig.KVStore.MemberlistKV,
+		"ingester-partition":     c.Cfg.Ingester.KafkaIngestion.PartitionRingConfig.KVStore.MemberlistKV,
+		"ingest-limits":          c.Cfg.IngestLimits.LifecyclerConfig.RingConfig.KVStore.MemberlistKV,
+		"ingest-limits-frontend": c.Cfg.IngestLimitsFrontend.LifecyclerConfig.RingConfig.KVStore.MemberlistKV,
+		"ui":                     c.Cfg.UI.Ring.KVStore.MemberlistKV,
+		"dataobj-flight":         c.Cfg.DataObjFlight.Ring.KVStore.MemberlistKV,
+	} {
+		require.NotNil(t, getKV, "ring %q has no memberlist KV; add it to initMemberlistKV", name)
+	}
+}
+
+// TestDataObjFlightRingOverMemberlist is a regression test for the
+// dataobj-flight ring crashing at startup with store=memberlist: creating the
+// ring manager must find the memberlist KV wired into its config.
+func TestDataObjFlightRingOverMemberlist(t *testing.T) {
+	dir := t.TempDir()
+	prepareGlobalMetricsRegistry(t)
+
+	cfg := minimalWorkingConfig(t, dir, DataObjFlight, func(cfg *Config) {
+		cfg.DataObjFlight.RingEnabled = true
+		cfg.DataObjFlight.Ring.KVStore.Store = "memberlist"
+		cfg.DataObjFlight.Ring.InstanceAddr = localhost
+		cfg.MemberlistKV.TCPTransport.BindPort = 0
+	})
+	c, err := New(cfg)
+	require.NoError(t, err)
+
+	services, err := c.ModuleManager.InitModuleServices(DataObjFlightRing)
+	defer func() {
+		for _, service := range services {
+			service.StopAsync()
+		}
+	}()
+	require.NoError(t, err)
+	require.NotNil(t, c.dataObjFlightRingManager, "ring manager should be created when the ring is enabled")
+	require.NotNil(t, c.dataObjFlightRingManager.Ring)
 }

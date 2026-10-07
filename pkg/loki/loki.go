@@ -10,6 +10,7 @@ import (
 	"os"
 	rt "runtime"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/fatih/color"
@@ -71,6 +72,7 @@ import (
 	"github.com/grafana/loki/v3/pkg/scratch"
 	internalserver "github.com/grafana/loki/v3/pkg/server"
 	"github.com/grafana/loki/v3/pkg/storage"
+	"github.com/grafana/loki/v3/pkg/storage/archive"
 	"github.com/grafana/loki/v3/pkg/storage/config"
 	"github.com/grafana/loki/v3/pkg/storage/stores/shipper/bloomshipper"
 	"github.com/grafana/loki/v3/pkg/tracing"
@@ -124,6 +126,7 @@ type Config struct {
 	KafkaConfig         kafka.Config               `yaml:"kafka_config,omitempty" category:"experimental"`
 	DataObj             dataobjconfig.Config       `yaml:"dataobj,omitempty" category:"experimental"`
 	DataObjFlight       arrowflight.Config         `yaml:"dataobj_flight,omitempty" category:"experimental"`
+	ArchiveQuerier      archive.Config             `yaml:"archive_querier,omitempty" category:"experimental"`
 	// TODO(segflow): restore `yaml:"logline,omitempty"` once the logline
 	// configuration is settled. Until then the section is flags-only and left
 	// out of the config reference. Every field is reachable through
@@ -248,6 +251,7 @@ func (c *Config) RegisterFlags(f *flag.FlagSet) {
 	c.UI.RegisterFlags(f)
 	c.DataObj.RegisterFlags(f)
 	c.DataObjFlight.RegisterFlags(f)
+	c.ArchiveQuerier.RegisterFlags(f)
 	c.Logline.RegisterFlags(f)
 }
 
@@ -481,6 +485,15 @@ type Loki struct {
 	loglinePartitionRing      *loglinebuilder.PartitionRingWatcher
 	dataObjCompactionPlanner  *enginecompactor.Planner
 	dataObjCompactionWorker   *enginecompactor.Worker
+	dataObjFlightRingManager  *lokiring.RingManager
+	// Shared by the dataobj-flight and archive-querier targets when both run
+	// in one process: metrics register once and the archive is opened once.
+	dataObjFlightMetricsOnce  sync.Once
+	dataObjFlightScanMetrics  *arrowflight.Metrics
+	dataObjFlightCacheMetrics *arrowflight.DiskCacheMetrics
+	archiveSourceOnce         sync.Once
+	archiveSource             *arrowflight.ArchiveSource
+	archiveSourceErr          error
 	scratchStore              scratch.Store
 	queryEngineV2             *engine.Engine
 	queryEngineV2Scheduler    *engine.Scheduler
@@ -843,6 +856,8 @@ func (t *Loki) setupModuleManager() error {
 	mm.RegisterModule(LoglineQueryFrontendTripperware, t.initLoglineQueryFrontendTripperware, modules.UserInvisibleModule)
 	mm.RegisterModule(DataObjExplorer, t.initDataObjExplorer, modules.UserInvisibleTargetableModule)
 	mm.RegisterModule(DataObjFlight, t.initDataObjFlight, modules.UserInvisibleTargetableModule)
+	mm.RegisterModule(DataObjFlightRing, t.initDataObjFlightRing, modules.UserInvisibleModule)
+	mm.RegisterModule(ArchiveQuerier, t.initArchiveQuerier, modules.UserInvisibleTargetableModule)
 	mm.RegisterModule(QueryEngine, t.initV2QueryEngine, modules.UserInvisibleTargetableModule)
 	mm.RegisterModule(QueryEngineScheduler, t.initV2QueryEngineScheduler, modules.UserInvisibleTargetableModule)
 	mm.RegisterModule(QueryEngineWorker, t.initV2QueryEngineWorker, modules.UserInvisibleTargetableModule)
@@ -890,7 +905,9 @@ func (t *Loki) setupModuleManager() error {
 		PartitionRing:            {MemberlistKV, Server, Ring},
 		MemberlistKV:             {Server},
 		DataObjExplorer:          {Server, UIRing},
-		DataObjFlight:            {Server},
+		DataObjFlight:            {Server, DataObjFlightRing},
+		DataObjFlightRing:        {Server, MemberlistKV},
+		ArchiveQuerier:           {Server, Overrides, Analytics, CacheGenerationLoader, QuerySchedulerRing},
 		DataObjBuilder:           {ScratchStore, Server, UIRing, Overrides},
 		DataObjCompactionPlanner: {Server, UIRing, Overrides},
 		DataObjCompactionWorker:  {ScratchStore, Server, UIRing},

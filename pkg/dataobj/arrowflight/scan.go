@@ -5,6 +5,8 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
+	"slices"
 
 	"github.com/apache/arrow-go/v18/arrow"
 	"github.com/apache/arrow-go/v18/arrow/array"
@@ -219,16 +221,39 @@ func (c *objectCache) newLogsScanner(ctx context.Context, ts *TableSchema, schem
 		}
 	}
 
-	needStreams := needLabels
-	for _, p := range req.GetPredicates() {
-		if b, ok := ts.binding(p.GetColumn()); ok && b.Kind == columnKindLabel {
-			needStreams = true
+	// The streams table is only needed for projected label columns and label
+	// predicates, and only for those labels. When the request already names
+	// the stream IDs (the metastore resolved the label predicates), only
+	// those streams are loaded.
+	wantLabels := map[string]struct{}{}
+	for _, o := range outputs {
+		if o.label != "" {
+			wantLabels[o.label] = struct{}{}
 		}
 	}
+	var wantIDs []int64
+	for _, p := range req.GetPredicates() {
+		b, ok := ts.binding(p.GetColumn())
+		if !ok {
+			continue
+		}
+		switch {
+		case b.Kind == columnKindLabel:
+			wantLabels[b.Source] = struct{}{}
+		case b.Kind == columnKindFixed && b.Source == ColumnStreamID && p.GetOp() == scanpb.Op_OP_IN:
+			for _, lit := range p.GetValues() {
+				if v, ok := lit.GetValue().(*scanpb.Literal_Int64Value); ok {
+					wantIDs = append(wantIDs, v.Int64Value)
+				}
+			}
+		}
+	}
+	needStreams := needLabels || len(wantLabels) > 0
 
 	var st *streamsTable
 	if needStreams {
-		st, err = c.streamsFor(ctx, info, sec.Tenant)
+		want := streamsWant{ids: wantIDs, labels: slices.Sorted(maps.Keys(wantLabels))}
+		st, err = c.streamsFor(ctx, info, sec.Tenant, want)
 		if err != nil {
 			return nil, err
 		}

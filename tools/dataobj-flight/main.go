@@ -13,6 +13,7 @@ import (
 	"context"
 	"flag"
 	"fmt"
+	"net/http"
 	"os"
 	"strings"
 	"syscall"
@@ -20,6 +21,8 @@ import (
 	"github.com/apache/arrow-go/v18/arrow/flight"
 	"github.com/go-kit/log"
 	"github.com/go-kit/log/level"
+	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"github.com/thanos-io/objstore/providers/filesystem"
 
 	"github.com/grafana/loki/v3/pkg/dataobj/arrowflight"
@@ -31,6 +34,11 @@ func main() {
 		prefix  = flag.String("prefix", "objects", "Prefix within the bucket under which data objects are discovered.")
 		addr    = flag.String("addr", "127.0.0.1:8815", "Address to listen on.")
 		verbose = flag.Bool("v", false, "Enable debug logging.")
+		metrics = flag.String("metrics-addr", "127.0.0.1:8825", "Address serving Prometheus metrics on /metrics; empty disables it.")
+		// Loki's dataobj-flight target gets locations from a ring; the local
+		// tool takes a fixed list so the client's location handling can be
+		// exercised with two processes over the same directory.
+		locations = flag.String("locations", "", "Comma-separated Flight location URIs (grpc+tcp://host:port) put on every planned endpoint; empty leaves endpoints without locations.")
 
 		archiveDir      = flag.String("archive-dir", "", "Root directory of an archive bucket (gzipped OTLP JSON under <tenant>/YYYY/MM/DD/HH/mm/). Enables the archive_logs table.")
 		archiveTenant   = flag.String("archive-tenant", "", "Tenant directory within -archive-dir (or any prefix, for example tenant=12345/signal=logs with -archive-layout hive).")
@@ -56,7 +64,17 @@ func main() {
 		labelColumns: splitList(*archiveColumns),
 		metadata:     splitList(*archiveMetadata),
 	}
-	if err := run(context.Background(), *dir, *prefix, *addr, archive, logger); err != nil {
+	if *metrics != "" {
+		go func() {
+			mux := http.NewServeMux()
+			mux.Handle("/metrics", promhttp.Handler())
+			level.Info(logger).Log("msg", "serving metrics", "addr", *metrics)
+			if err := http.ListenAndServe(*metrics, mux); err != nil {
+				level.Error(logger).Log("msg", "metrics server failed", "err", err)
+			}
+		}()
+	}
+	if err := run(context.Background(), *dir, *prefix, *addr, splitList(*locations), archive, logger); err != nil {
 		level.Error(logger).Log("msg", "dataobj-flight failed", "err", err)
 		os.Exit(1)
 	}
@@ -80,7 +98,7 @@ func splitList(s string) []string {
 	return out
 }
 
-func run(ctx context.Context, dir, prefix, addr string, archive archiveOptions, logger log.Logger) error {
+func run(ctx context.Context, dir, prefix, addr string, locations []string, archive archiveOptions, logger log.Logger) error {
 	bucket, err := filesystem.NewBucket(dir)
 	if err != nil {
 		return fmt.Errorf("opening bucket at %s: %w", dir, err)
@@ -100,6 +118,7 @@ func run(ctx context.Context, dir, prefix, addr string, archive archiveOptions, 
 		}
 	}
 
+	flightMetrics := arrowflight.NewMetrics(prometheus.DefaultRegisterer)
 	sources := []arrowflight.Source{catalog}
 	if archive.dir != "" {
 		archiveBucket, err := filesystem.NewBucket(archive.dir)
@@ -113,6 +132,7 @@ func run(ctx context.Context, dir, prefix, addr string, archive archiveOptions, 
 			IndexLabels:     archive.labels,
 			LabelColumns:    archive.labelColumns,
 			MetadataColumns: archive.metadata,
+			Metrics:         flightMetrics,
 			Logger:          logger,
 		})
 		if err != nil {
@@ -130,9 +150,13 @@ func run(ctx context.Context, dir, prefix, addr string, archive archiveOptions, 
 	if err := srv.Init(addr); err != nil {
 		return fmt.Errorf("listening on %s: %w", addr, err)
 	}
-	srv.RegisterFlightService(arrowflight.NewServer(logger, sources...))
+	flightServer := arrowflight.NewServerWithMetrics(logger, flightMetrics, sources...)
+	if len(locations) > 0 {
+		flightServer.WithLocator(arrowflight.StaticLocator{Locations: locations})
+	}
+	srv.RegisterFlightService(flightServer)
 	srv.SetShutdownOnSignals(os.Interrupt, syscall.SIGTERM)
 
-	level.Info(logger).Log("msg", "dataobj-flight listening", "addr", srv.Addr().String())
+	level.Info(logger).Log("msg", "dataobj-flight listening", "addr", srv.Addr().String(), "locations", strings.Join(locations, ","))
 	return srv.Serve()
 }

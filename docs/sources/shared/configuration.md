@@ -1619,6 +1619,138 @@ dataobj_flight:
   # CLI flag: -dataobj-flight.prefetch-bytes
   [prefetch_bytes: <int> | default = 0]
 
+  # Experimental: Opened data objects kept in memory by the scan service.
+  # CLI flag: -dataobj-flight.max-cached-objects
+  [max_cached_objects: <int> | default = 256]
+
+  # Experimental: Bytes of in-memory streams tables (stream ID to labels, per
+  # object) kept for joining labels into log rows; least recently used tables
+  # are dropped past it.
+  # CLI flag: -dataobj-flight.streams-cache-bytes
+  [streams_cache_bytes: <int> | default = 268435456]
+
+  # Experimental: Maximum DoGet scans served at once by this instance; further
+  # scans wait for a slot. 0 means unbounded.
+  # CLI flag: -dataobj-flight.max-concurrent-scans
+  [max_concurrent_scans: <int> | default = 16]
+
+  disk_cache:
+    # Experimental: Directory for a read-through disk cache of object store
+    # reads (data objects, metastore index and archive). Empty disables the
+    # cache.
+    # CLI flag: -dataobj-flight.disk-cache.dir
+    [dir: <string> | default = ""]
+
+    # Experimental: Maximum bytes kept in the disk cache before least recently
+    # used entries are evicted. 0 means 10 GiB.
+    # CLI flag: -dataobj-flight.disk-cache.max-size-bytes
+    [max_size_bytes: <int> | default = 0]
+
+    # Experimental: Comma-separated stores that go through the disk cache: data
+    # (data objects and metastore index), archive. Empty means both. Leave out a
+    # store whose working set is far larger than the cache.
+    # CLI flag: -dataobj-flight.disk-cache.buckets
+    [buckets: <string> | default = ""]
+
+  # Experimental: Join a ring of dataobj-flight instances and put the ring
+  # members that should serve each planned endpoint on it as Flight locations.
+  # CLI flag: -dataobj-flight.ring.enabled
+  [ring_enabled: <boolean> | default = false]
+
+  # Ring of dataobj-flight instances, used to place scan endpoints when
+  # ring_enabled is true.
+  ring:
+    kvstore:
+      # Backend storage to use for the ring. Supported values are: consul, etcd,
+      # inmemory, memberlist, multi.
+      # CLI flag: -dataobj-flight.ring.store
+      [store: <string> | default = "consul"]
+
+      # The prefix for the keys in the store. Should end with a /.
+      # CLI flag: -dataobj-flight.ring.prefix
+      [prefix: <string> | default = "collectors/"]
+
+      # Configuration for a Consul client. Only applies if the selected kvstore
+      # is consul.
+      # The CLI flags prefix for this block configuration is:
+      # dataobj-flight.ring
+      [consul: <consul>]
+
+      # Configuration for an ETCD v3 client. Only applies if the selected
+      # kvstore is etcd.
+      # The CLI flags prefix for this block configuration is:
+      # dataobj-flight.ring
+      [etcd: <etcd>]
+
+      multi:
+        # Primary backend storage used by multi-client.
+        # CLI flag: -dataobj-flight.ring.multi.primary
+        [primary: <string> | default = ""]
+
+        # Secondary backend storage used by multi-client.
+        # CLI flag: -dataobj-flight.ring.multi.secondary
+        [secondary: <string> | default = ""]
+
+        # Mirror writes to the secondary store.
+        # CLI flag: -dataobj-flight.ring.multi.mirror-enabled
+        [mirror_enabled: <boolean> | default = false]
+
+        # Timeout for storing a value to the secondary store.
+        # CLI flag: -dataobj-flight.ring.multi.mirror-timeout
+        [mirror_timeout: <duration> | default = 2s]
+
+    # Period at which to heartbeat to the ring.
+    # CLI flag: -dataobj-flight.ring.heartbeat-period
+    [heartbeat_period: <duration> | default = 15s]
+
+    # The heartbeat timeout after which compactors are considered unhealthy
+    # within the ring. 0 = never (timeout disabled).
+    # CLI flag: -dataobj-flight.ring.heartbeat-timeout
+    [heartbeat_timeout: <duration> | default = 1m]
+
+    # File path where tokens are stored. If empty, tokens are not stored at
+    # shutdown and restored at startup.
+    # CLI flag: -dataobj-flight.ring.tokens-file-path
+    [tokens_file_path: <string> | default = ""]
+
+    # True to enable zone-awareness and replicate blocks across different
+    # availability zones.
+    # CLI flag: -dataobj-flight.ring.zone-awareness-enabled
+    [zone_awareness_enabled: <boolean> | default = false]
+
+    # Number of tokens to own in the ring.
+    # CLI flag: -dataobj-flight.ring.num-tokens
+    [num_tokens: <int> | default = 128]
+
+    # Factor for data replication.
+    # CLI flag: -dataobj-flight.ring.replication-factor
+    [replication_factor: <int> | default = 3]
+
+    # Instance ID to register in the ring.
+    # CLI flag: -dataobj-flight.ring.instance-id
+    [instance_id: <string> | default = "<hostname>"]
+
+    # Name of network interface to read address from.
+    # CLI flag: -dataobj-flight.ring.instance-interface-names
+    [instance_interface_names: <list of strings> | default = [<private network interfaces>]]
+
+    # Port to advertise in the ring (defaults to server.grpc-listen-port).
+    # CLI flag: -dataobj-flight.ring.instance-port
+    [instance_port: <int> | default = 0]
+
+    # IP address to advertise in the ring.
+    # CLI flag: -dataobj-flight.ring.instance-addr
+    [instance_addr: <string> | default = ""]
+
+    # The availability zone where this instance is running. Required if
+    # zone-awareness is enabled.
+    # CLI flag: -dataobj-flight.ring.instance-availability-zone
+    [instance_availability_zone: <string> | default = ""]
+
+    # Enable using a IPv6 instance address.
+    # CLI flag: -dataobj-flight.ring.instance-enable-ipv6
+    [instance_enable_ipv6: <boolean> | default = false]
+
   archive:
     # Experimental: Serve an archive bucket as the archive_logs table.
     # CLI flag: -dataobj-flight.archive.enabled
@@ -1671,6 +1803,26 @@ dataobj_flight:
     # GOMAXPROCS.
     # CLI flag: -dataobj-flight.archive.concurrency
     [concurrency: <int> | default = 0]
+
+archive_querier:
+  # Experimental: serve LogQL over the archive configured by
+  # dataobj_flight.archive through the archive-querier target.
+  # CLI flag: -archive-querier.enabled
+  [enabled: <boolean> | default = false]
+
+  # Experimental: maximum archive objects decoded to answer a labels, label
+  # values or series request; sampled evenly across the range when exceeded.
+  # CLI flag: -archive-querier.max-metadata-objects
+  [max_metadata_objects: <int> | default = 256]
+
+  # Experimental: five-minute archive partitions decoded ahead of the one a log
+  # query is reading.
+  # CLI flag: -archive-querier.prefetch-partitions
+  [prefetch_partitions: <int> | default = 2]
+
+  # Experimental: archive objects fetched at once per request.
+  # CLI flag: -archive-querier.object-concurrency
+  [object_concurrency: <int> | default = 32]
 
 ingest_limits:
   # Enable the ingest limits service.
@@ -3184,6 +3336,7 @@ Configuration for a Consul client. Only applies if the selected kvstore is `cons
 
 - `common.storage.ring`
 - `compactor.ring`
+- `dataobj-flight.ring`
 - `distributor.ring`
 - `index-gateway.ring`
 - `ingest-limits`
@@ -3466,6 +3619,7 @@ Configuration for an ETCD v3 client. Only applies if the selected kvstore is `et
 
 - `common.storage.ring`
 - `compactor.ring`
+- `dataobj-flight.ring`
 - `distributor.ring`
 - `index-gateway.ring`
 - `ingest-limits`
@@ -7539,6 +7693,7 @@ The TLS configuration. The supported CLI flags `<prefix>` used to reference this
 - `common.storage.ring.etcd`
 - `compactor.grpc-client`
 - `compactor.ring.etcd`
+- `dataobj-flight.ring.etcd`
 - `distributor.ring.etcd`
 - `etcd`
 - `frontend.grpc-client-config`

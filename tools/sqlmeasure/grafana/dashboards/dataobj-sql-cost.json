@@ -1,0 +1,3164 @@
+{
+  "apiVersion": "dashboard.grafana.app/v0alpha1",
+  "kind": "Dashboard",
+  "metadata": {
+    "name": "dataobj-sql-cost",
+    "annotations": {
+      "grafana.app/folder": "loki-dataobj-sql"
+    }
+  },
+  "spec": {
+    "uid": "dataobj-sql-cost",
+    "title": "Loki dataobj SQL: query-in-place cost and speed",
+    "tags": [
+      "loki",
+      "dataobj",
+      "sql",
+      "cost"
+    ],
+    "description": "Cost ($/GB, $/query drivers) and speed (MB/s per core, latency) of the Arrow Flight + DataFusion query-in-place prototype, next to the live Loki query path in the same cell.",
+    "timezone": "browser",
+    "editable": true,
+    "graphTooltip": 1,
+    "schemaVersion": 39,
+    "version": 1,
+    "refresh": "30s",
+    "time": {
+      "from": "now-3h",
+      "to": "now"
+    },
+    "templating": {
+      "list": [
+        {
+          "type": "datasource",
+          "name": "datasource",
+          "label": "Prometheus",
+          "query": "prometheus",
+          "current": {
+            "text": "",
+            "value": "",
+            "selected": false
+          },
+          "refresh": 1,
+          "regex": "",
+          "options": []
+        },
+        {
+          "type": "query",
+          "name": "cluster",
+          "label": "Cluster",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "query": {
+            "query": "label_values(up{namespace=~\"loki-.*\"}, cluster)",
+            "refId": "var"
+          },
+          "refresh": 2,
+          "sort": 1,
+          "multi": false,
+          "includeAll": false,
+          "regex": "",
+          "current": {
+            "text": "",
+            "value": "",
+            "selected": true
+          },
+          "options": []
+        },
+        {
+          "type": "query",
+          "name": "namespace",
+          "label": "Namespace",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "query": {
+            "query": "label_values(up{cluster=\"$cluster\", namespace=~\"loki-.*\"}, namespace)",
+            "refId": "var"
+          },
+          "refresh": 2,
+          "sort": 1,
+          "multi": false,
+          "includeAll": false,
+          "regex": "",
+          "current": {
+            "text": "",
+            "value": "",
+            "selected": true
+          },
+          "options": []
+        },
+        {
+          "type": "query",
+          "name": "job",
+          "label": "Flight scan job",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "query": {
+            "query": "label_values(up{cluster=\"$cluster\", namespace=\"$namespace\"}, job)",
+            "refId": "var"
+          },
+          "refresh": 2,
+          "sort": 1,
+          "multi": false,
+          "includeAll": false,
+          "regex": "",
+          "current": {
+            "text": "",
+            "value": "",
+            "selected": true
+          },
+          "options": []
+        },
+        {
+          "type": "query",
+          "name": "querier_job",
+          "label": "Baseline querier job",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "query": {
+            "query": "label_values(up{cluster=\"$cluster\", namespace=\"$namespace\", container=\"querier\"}, job)",
+            "refId": "var"
+          },
+          "refresh": 2,
+          "sort": 1,
+          "multi": true,
+          "includeAll": true,
+          "regex": "",
+          "current": {
+            "text": "$__all",
+            "value": "$__all",
+            "selected": true
+          },
+          "options": [],
+          "allValue": ".*"
+        },
+        {
+          "type": "query",
+          "name": "frontend_job",
+          "label": "Baseline frontend job",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "query": {
+            "query": "label_values(up{cluster=\"$cluster\", namespace=\"$namespace\", container=\"query-frontend\"}, job)",
+            "refId": "var"
+          },
+          "refresh": 2,
+          "sort": 1,
+          "multi": true,
+          "includeAll": true,
+          "regex": "",
+          "current": {
+            "text": "$__all",
+            "value": "$__all",
+            "selected": true
+          },
+          "options": [],
+          "allValue": ".*"
+        },
+        {
+          "type": "textbox",
+          "name": "cpu_price",
+          "label": "$ per vCPU-hour",
+          "query": "0.045",
+          "current": {
+            "text": "0.045",
+            "value": "0.045",
+            "selected": true
+          },
+          "options": []
+        },
+        {
+          "type": "textbox",
+          "name": "get_price",
+          "label": "$ per 1k object-store requests",
+          "query": "0.0004",
+          "current": {
+            "text": "0.0004",
+            "value": "0.0004",
+            "selected": true
+          },
+          "options": []
+        }
+      ]
+    },
+    "annotations": {
+      "list": [
+        {
+          "builtIn": 1,
+          "type": "dashboard",
+          "name": "Annotations & Alerts",
+          "datasource": {
+            "type": "grafana",
+            "uid": "-- Grafana --"
+          },
+          "enable": true,
+          "hide": true,
+          "iconColor": "rgba(0, 211, 255, 1)"
+        }
+      ]
+    },
+    "links": [
+      {
+        "title": "Measurement harness (tools/sqlmeasure)",
+        "type": "link",
+        "url": "https://github.com/grafana/loki/tree/main/tools/sqlmeasure",
+        "targetBlank": true
+      }
+    ],
+    "panels": [
+      {
+        "type": "text",
+        "title": "",
+        "id": 1,
+        "gridPos": {
+          "x": 0,
+          "y": 0,
+          "w": 24,
+          "h": 3
+        },
+        "options": {
+          "mode": "markdown",
+          "content": "**Query-in-place cost model.** `cost = CPU-s \u00d7 $/vCPU-h + object-store requests \u00d7 $/1k + bytes \u00d7 $/GB egress`. To first order the cost of a query is linear in compressed bytes scanned and independent of speed; speed (MB/s per core) sets how many cores a latency target needs, i.e. fleet size. Rows 1 and 2 read the Flight scan service's `loki_dataobj_flight_*` series for **$job** and are empty until the shadow deployment runs. Row 3 reads the live Loki query path in **$namespace** today so the two can be compared on the same axes. Prices are the `cpu_price` and `get_price` variables. Numbers are per-process rates, so run one query at a time on the shadow pod, or read them as averages."
+        }
+      },
+      {
+        "type": "row",
+        "title": "Resources \u2014 raw CPU and memory",
+        "id": 2,
+        "gridPos": {
+          "x": 0,
+          "y": 3,
+          "w": 24,
+          "h": 1
+        },
+        "collapsed": false,
+        "panels": []
+      },
+      {
+        "type": "timeseries",
+        "title": "CPU usage \u2014 Flight scan service (cores, total)",
+        "description": "",
+        "datasource": {
+          "type": "prometheus",
+          "uid": "${datasource}"
+        },
+        "id": 3,
+        "gridPos": {
+          "x": 0,
+          "y": 4,
+          "w": 12,
+          "h": 8
+        },
+        "fieldConfig": {
+          "defaults": {
+            "unit": "short",
+            "custom": {
+              "lineWidth": 1,
+              "fillOpacity": 10,
+              "stacking": {
+                "mode": "none",
+                "group": "A"
+              },
+              "showPoints": "never",
+              "spanNulls": true
+            },
+            "min": 0
+          },
+          "overrides": []
+        },
+        "options": {
+          "legend": {
+            "displayMode": "table",
+            "placement": "bottom",
+            "calcs": [
+              "mean",
+              "max"
+            ]
+          },
+          "tooltip": {
+            "mode": "multi",
+            "sort": "desc"
+          }
+        },
+        "targets": [
+          {
+            "datasource": {
+              "type": "prometheus",
+              "uid": "${datasource}"
+            },
+            "expr": "sum(rate(process_cpu_seconds_total{cluster=\"$cluster\", namespace=\"$namespace\", job=\"$job\"}[$__rate_interval]))",
+            "legendFormat": "total",
+            "refId": "A",
+            "range": true,
+            "instant": false
+          }
+        ]
+      },
+      {
+        "type": "timeseries",
+        "title": "Memory usage \u2014 Flight scan service (RSS, total)",
+        "description": "",
+        "datasource": {
+          "type": "prometheus",
+          "uid": "${datasource}"
+        },
+        "id": 4,
+        "gridPos": {
+          "x": 12,
+          "y": 4,
+          "w": 12,
+          "h": 8
+        },
+        "fieldConfig": {
+          "defaults": {
+            "unit": "bytes",
+            "custom": {
+              "lineWidth": 1,
+              "fillOpacity": 10,
+              "stacking": {
+                "mode": "none",
+                "group": "A"
+              },
+              "showPoints": "never",
+              "spanNulls": true
+            },
+            "min": 0
+          },
+          "overrides": []
+        },
+        "options": {
+          "legend": {
+            "displayMode": "table",
+            "placement": "bottom",
+            "calcs": [
+              "mean",
+              "max"
+            ]
+          },
+          "tooltip": {
+            "mode": "multi",
+            "sort": "desc"
+          }
+        },
+        "targets": [
+          {
+            "datasource": {
+              "type": "prometheus",
+              "uid": "${datasource}"
+            },
+            "expr": "sum(process_resident_memory_bytes{cluster=\"$cluster\", namespace=\"$namespace\", job=\"$job\"})",
+            "legendFormat": "total",
+            "refId": "A",
+            "range": true,
+            "instant": false
+          }
+        ]
+      },
+      {
+        "type": "timeseries",
+        "title": "CPU usage \u2014 queriers (cores)",
+        "description": "",
+        "datasource": {
+          "type": "prometheus",
+          "uid": "${datasource}"
+        },
+        "id": 5,
+        "gridPos": {
+          "x": 0,
+          "y": 12,
+          "w": 12,
+          "h": 8
+        },
+        "fieldConfig": {
+          "defaults": {
+            "unit": "short",
+            "custom": {
+              "lineWidth": 1,
+              "fillOpacity": 10,
+              "stacking": {
+                "mode": "none",
+                "group": "A"
+              },
+              "showPoints": "never",
+              "spanNulls": true
+            },
+            "min": 0
+          },
+          "overrides": []
+        },
+        "options": {
+          "legend": {
+            "displayMode": "table",
+            "placement": "bottom",
+            "calcs": [
+              "mean",
+              "max"
+            ]
+          },
+          "tooltip": {
+            "mode": "multi",
+            "sort": "desc"
+          }
+        },
+        "targets": [
+          {
+            "datasource": {
+              "type": "prometheus",
+              "uid": "${datasource}"
+            },
+            "expr": "sum by (job) (rate(process_cpu_seconds_total{cluster=\"$cluster\", namespace=\"$namespace\", job=~\"$querier_job\"}[$__rate_interval]))",
+            "legendFormat": "{{job}}",
+            "refId": "A",
+            "range": true,
+            "instant": false
+          }
+        ]
+      },
+      {
+        "type": "timeseries",
+        "title": "Memory usage \u2014 queriers (RSS)",
+        "description": "",
+        "datasource": {
+          "type": "prometheus",
+          "uid": "${datasource}"
+        },
+        "id": 6,
+        "gridPos": {
+          "x": 12,
+          "y": 12,
+          "w": 12,
+          "h": 8
+        },
+        "fieldConfig": {
+          "defaults": {
+            "unit": "bytes",
+            "custom": {
+              "lineWidth": 1,
+              "fillOpacity": 10,
+              "stacking": {
+                "mode": "none",
+                "group": "A"
+              },
+              "showPoints": "never",
+              "spanNulls": true
+            },
+            "min": 0
+          },
+          "overrides": []
+        },
+        "options": {
+          "legend": {
+            "displayMode": "table",
+            "placement": "bottom",
+            "calcs": [
+              "mean",
+              "max"
+            ]
+          },
+          "tooltip": {
+            "mode": "multi",
+            "sort": "desc"
+          }
+        },
+        "targets": [
+          {
+            "datasource": {
+              "type": "prometheus",
+              "uid": "${datasource}"
+            },
+            "expr": "sum by (job) (process_resident_memory_bytes{cluster=\"$cluster\", namespace=\"$namespace\", job=~\"$querier_job\"})",
+            "legendFormat": "{{job}}",
+            "refId": "A",
+            "range": true,
+            "instant": false
+          }
+        ]
+      },
+      {
+        "type": "row",
+        "title": "Resources \u2014 per pod",
+        "id": 7,
+        "gridPos": {
+          "x": 0,
+          "y": 20,
+          "w": 24,
+          "h": 1
+        },
+        "collapsed": false,
+        "panels": []
+      },
+      {
+        "type": "timeseries",
+        "title": "CPU usage per pod \u2014 Flight scan service (cores)",
+        "description": "",
+        "datasource": {
+          "type": "prometheus",
+          "uid": "${datasource}"
+        },
+        "id": 8,
+        "gridPos": {
+          "x": 0,
+          "y": 21,
+          "w": 12,
+          "h": 8
+        },
+        "fieldConfig": {
+          "defaults": {
+            "unit": "short",
+            "custom": {
+              "lineWidth": 1,
+              "fillOpacity": 10,
+              "stacking": {
+                "mode": "none",
+                "group": "A"
+              },
+              "showPoints": "never",
+              "spanNulls": true
+            },
+            "min": 0
+          },
+          "overrides": []
+        },
+        "options": {
+          "legend": {
+            "displayMode": "table",
+            "placement": "right",
+            "calcs": [
+              "mean",
+              "max"
+            ]
+          },
+          "tooltip": {
+            "mode": "multi",
+            "sort": "desc"
+          }
+        },
+        "targets": [
+          {
+            "datasource": {
+              "type": "prometheus",
+              "uid": "${datasource}"
+            },
+            "expr": "sum by (pod) (rate(process_cpu_seconds_total{cluster=\"$cluster\", namespace=\"$namespace\", job=\"$job\"}[$__rate_interval]))",
+            "legendFormat": "{{pod}}",
+            "refId": "A",
+            "range": true,
+            "instant": false
+          }
+        ]
+      },
+      {
+        "type": "timeseries",
+        "title": "Memory usage per pod \u2014 Flight scan service (RSS)",
+        "description": "",
+        "datasource": {
+          "type": "prometheus",
+          "uid": "${datasource}"
+        },
+        "id": 9,
+        "gridPos": {
+          "x": 12,
+          "y": 21,
+          "w": 12,
+          "h": 8
+        },
+        "fieldConfig": {
+          "defaults": {
+            "unit": "bytes",
+            "custom": {
+              "lineWidth": 1,
+              "fillOpacity": 10,
+              "stacking": {
+                "mode": "none",
+                "group": "A"
+              },
+              "showPoints": "never",
+              "spanNulls": true
+            },
+            "min": 0
+          },
+          "overrides": []
+        },
+        "options": {
+          "legend": {
+            "displayMode": "table",
+            "placement": "right",
+            "calcs": [
+              "mean",
+              "max"
+            ]
+          },
+          "tooltip": {
+            "mode": "multi",
+            "sort": "desc"
+          }
+        },
+        "targets": [
+          {
+            "datasource": {
+              "type": "prometheus",
+              "uid": "${datasource}"
+            },
+            "expr": "sum by (pod) (process_resident_memory_bytes{cluster=\"$cluster\", namespace=\"$namespace\", job=\"$job\"})",
+            "legendFormat": "{{pod}}",
+            "refId": "A",
+            "range": true,
+            "instant": false
+          }
+        ]
+      },
+      {
+        "type": "timeseries",
+        "title": "CPU usage per pod \u2014 queriers (cores)",
+        "description": "",
+        "datasource": {
+          "type": "prometheus",
+          "uid": "${datasource}"
+        },
+        "id": 10,
+        "gridPos": {
+          "x": 0,
+          "y": 29,
+          "w": 12,
+          "h": 8
+        },
+        "fieldConfig": {
+          "defaults": {
+            "unit": "short",
+            "custom": {
+              "lineWidth": 1,
+              "fillOpacity": 10,
+              "stacking": {
+                "mode": "none",
+                "group": "A"
+              },
+              "showPoints": "never",
+              "spanNulls": true
+            },
+            "min": 0
+          },
+          "overrides": []
+        },
+        "options": {
+          "legend": {
+            "displayMode": "table",
+            "placement": "right",
+            "calcs": [
+              "mean",
+              "max"
+            ]
+          },
+          "tooltip": {
+            "mode": "multi",
+            "sort": "desc"
+          }
+        },
+        "targets": [
+          {
+            "datasource": {
+              "type": "prometheus",
+              "uid": "${datasource}"
+            },
+            "expr": "sum by (pod) (rate(process_cpu_seconds_total{cluster=\"$cluster\", namespace=\"$namespace\", job=~\"$querier_job\"}[$__rate_interval]))",
+            "legendFormat": "{{pod}}",
+            "refId": "A",
+            "range": true,
+            "instant": false
+          }
+        ]
+      },
+      {
+        "type": "timeseries",
+        "title": "Memory usage per pod \u2014 queriers (RSS)",
+        "description": "",
+        "datasource": {
+          "type": "prometheus",
+          "uid": "${datasource}"
+        },
+        "id": 11,
+        "gridPos": {
+          "x": 12,
+          "y": 29,
+          "w": 12,
+          "h": 8
+        },
+        "fieldConfig": {
+          "defaults": {
+            "unit": "bytes",
+            "custom": {
+              "lineWidth": 1,
+              "fillOpacity": 10,
+              "stacking": {
+                "mode": "none",
+                "group": "A"
+              },
+              "showPoints": "never",
+              "spanNulls": true
+            },
+            "min": 0
+          },
+          "overrides": []
+        },
+        "options": {
+          "legend": {
+            "displayMode": "table",
+            "placement": "right",
+            "calcs": [
+              "mean",
+              "max"
+            ]
+          },
+          "tooltip": {
+            "mode": "multi",
+            "sort": "desc"
+          }
+        },
+        "targets": [
+          {
+            "datasource": {
+              "type": "prometheus",
+              "uid": "${datasource}"
+            },
+            "expr": "sum by (pod) (process_resident_memory_bytes{cluster=\"$cluster\", namespace=\"$namespace\", job=~\"$querier_job\"})",
+            "legendFormat": "{{pod}}",
+            "refId": "A",
+            "range": true,
+            "instant": false
+          }
+        ]
+      },
+      {
+        "type": "row",
+        "title": "Bytes throughput side by side \u2014 live queriers ($querier_job) vs Flight scan service ($job)",
+        "id": 12,
+        "gridPos": {
+          "x": 0,
+          "y": 37,
+          "w": 24,
+          "h": 1
+        },
+        "collapsed": false,
+        "panels": []
+      },
+      {
+        "type": "timeseries",
+        "title": "Bytes throughput per query \u2014 live queriers",
+        "description": "Same panel as 'Bytes Throughput Querier' on the Loki / Queries dashboard, pointed at this cell's queriers: distribution of bytes processed per second per query (recording rules over loki_logql_querystats_bytes_processed_per_seconds). Uncompressed bytes.",
+        "datasource": {
+          "type": "prometheus",
+          "uid": "${datasource}"
+        },
+        "id": 13,
+        "gridPos": {
+          "x": 0,
+          "y": 38,
+          "w": 12,
+          "h": 9
+        },
+        "fieldConfig": {
+          "defaults": {
+            "unit": "Bps",
+            "custom": {
+              "lineWidth": 1,
+              "fillOpacity": 10,
+              "stacking": {
+                "mode": "none",
+                "group": "A"
+              },
+              "showPoints": "never",
+              "spanNulls": true
+            },
+            "min": 0
+          },
+          "overrides": []
+        },
+        "options": {
+          "legend": {
+            "displayMode": "table",
+            "placement": "bottom",
+            "calcs": [
+              "mean",
+              "max"
+            ]
+          },
+          "tooltip": {
+            "mode": "multi",
+            "sort": "desc"
+          }
+        },
+        "targets": [
+          {
+            "datasource": {
+              "type": "prometheus",
+              "uid": "${datasource}"
+            },
+            "expr": "histogram_quantile(0.01, sum by (le, type, range) (job_type_range:loki_logql_querystats_bytes_processed_per_seconds_bucket:sum_rate{cluster=~\"$cluster\", job=~\"$querier_job\"}))",
+            "legendFormat": "{{type}} - {{range}} p1",
+            "refId": "A",
+            "range": true,
+            "instant": false
+          },
+          {
+            "datasource": {
+              "type": "prometheus",
+              "uid": "${datasource}"
+            },
+            "expr": "sum(job_type_range:loki_logql_querystats_bytes_processed_per_seconds:50quantile{cluster=~\"$cluster\", job=~\"$querier_job\"}) by (type, range)",
+            "legendFormat": "{{type}} - {{range}} p50",
+            "refId": "B",
+            "range": true,
+            "instant": false
+          },
+          {
+            "datasource": {
+              "type": "prometheus",
+              "uid": "${datasource}"
+            },
+            "expr": "sum(job_type_range:loki_logql_querystats_bytes_processed_per_seconds:99quantile{cluster=~\"$cluster\", job=~\"$querier_job\"}) by (type, range)",
+            "legendFormat": "{{type}} - {{range}} p99",
+            "refId": "C",
+            "range": true,
+            "instant": false
+          },
+          {
+            "datasource": {
+              "type": "prometheus",
+              "uid": "${datasource}"
+            },
+            "expr": "sum(job_type_range:loki_logql_querystats_bytes_processed_per_seconds:avg{cluster=~\"$cluster\", job=~\"$querier_job\"}) by (type, range)",
+            "legendFormat": "{{type}} - {{range}} avg",
+            "refId": "D",
+            "range": true,
+            "instant": false
+          }
+        ]
+      },
+      {
+        "type": "timeseries",
+        "title": "Bytes throughput \u2014 Flight scan service",
+        "description": "Fleet decode rate of the shadow Flight pods. The service has no per-query histogram yet; while one query runs at a time (how the harness measures) this IS that query's bytes throughput, so read it against the live panel's percentiles. 'per busy core' divides by the cores in use so the two sides can be compared at equal CPU.",
+        "datasource": {
+          "type": "prometheus",
+          "uid": "${datasource}"
+        },
+        "id": 14,
+        "gridPos": {
+          "x": 12,
+          "y": 38,
+          "w": 12,
+          "h": 9
+        },
+        "fieldConfig": {
+          "defaults": {
+            "unit": "Bps",
+            "custom": {
+              "lineWidth": 1,
+              "fillOpacity": 10,
+              "stacking": {
+                "mode": "none",
+                "group": "A"
+              },
+              "showPoints": "never",
+              "spanNulls": true
+            },
+            "min": 0
+          },
+          "overrides": []
+        },
+        "options": {
+          "legend": {
+            "displayMode": "table",
+            "placement": "bottom",
+            "calcs": [
+              "mean",
+              "max"
+            ]
+          },
+          "tooltip": {
+            "mode": "multi",
+            "sort": "desc"
+          }
+        },
+        "targets": [
+          {
+            "datasource": {
+              "type": "prometheus",
+              "uid": "${datasource}"
+            },
+            "expr": "sum(rate(loki_dataobj_flight_archive_uncompressed_bytes_total{cluster=\"$cluster\", namespace=\"$namespace\", job=\"$job\"}[$__rate_interval]))",
+            "legendFormat": "archive uncompressed decoded / s",
+            "refId": "A",
+            "range": true,
+            "instant": false
+          },
+          {
+            "datasource": {
+              "type": "prometheus",
+              "uid": "${datasource}"
+            },
+            "expr": "sum(rate(loki_dataobj_flight_archive_compressed_bytes_total{cluster=\"$cluster\", namespace=\"$namespace\", job=\"$job\"}[$__rate_interval]))",
+            "legendFormat": "archive compressed fetched / s",
+            "refId": "B",
+            "range": true,
+            "instant": false
+          },
+          {
+            "datasource": {
+              "type": "prometheus",
+              "uid": "${datasource}"
+            },
+            "expr": "sum(rate(loki_dataobj_flight_bytes_served_total{cluster=\"$cluster\", namespace=\"$namespace\", job=\"$job\"}[$__rate_interval]))",
+            "legendFormat": "Arrow bytes served to gateway / s",
+            "refId": "C",
+            "range": true,
+            "instant": false
+          },
+          {
+            "datasource": {
+              "type": "prometheus",
+              "uid": "${datasource}"
+            },
+            "expr": "sum(rate(loki_dataobj_flight_archive_uncompressed_bytes_total{cluster=\"$cluster\", namespace=\"$namespace\", job=\"$job\"}[$__rate_interval])) / (sum(rate(process_cpu_seconds_total{cluster=\"$cluster\", namespace=\"$namespace\", job=\"$job\"}[$__rate_interval])) > 0)",
+            "legendFormat": "uncompressed per busy core / s",
+            "refId": "D",
+            "range": true,
+            "instant": false
+          }
+        ]
+      },
+      {
+        "type": "heatmap",
+        "title": "Bytes throughput per query heatmap \u2014 live queriers",
+        "description": "Same as 'Bytes Throughput Querier' heatmap (panel 18) on the Loki / Queries dashboard, for this cell.",
+        "datasource": {
+          "type": "prometheus",
+          "uid": "${datasource}"
+        },
+        "id": 15,
+        "gridPos": {
+          "x": 0,
+          "y": 47,
+          "w": 12,
+          "h": 9
+        },
+        "options": {
+          "calculate": false,
+          "yAxis": {
+            "unit": "Bps",
+            "decimals": 0
+          },
+          "color": {
+            "mode": "scheme",
+            "scheme": "Spectral",
+            "steps": 64,
+            "reverse": false
+          },
+          "cellGap": 1,
+          "legend": {
+            "show": true
+          },
+          "tooltip": {
+            "mode": "single",
+            "yHistogram": true
+          },
+          "exemplars": {
+            "color": "rgba(255,0,255,0.7)"
+          }
+        },
+        "targets": [
+          {
+            "datasource": {
+              "type": "prometheus",
+              "uid": "${datasource}"
+            },
+            "expr": "sum(rate(loki_logql_querystats_bytes_processed_per_seconds_bucket{cluster=~\"$cluster\", job=~\"$querier_job\"}[$__rate_interval])) by (le)",
+            "legendFormat": "{{le}}",
+            "refId": "A",
+            "range": true,
+            "instant": false,
+            "format": "heatmap"
+          }
+        ]
+      },
+      {
+        "type": "timeseries",
+        "title": "Bytes throughput per pod \u2014 Flight scan service",
+        "description": "The same rate split by replica (stacked): shows how evenly the ring spreads a query across the pool.",
+        "datasource": {
+          "type": "prometheus",
+          "uid": "${datasource}"
+        },
+        "id": 16,
+        "gridPos": {
+          "x": 12,
+          "y": 47,
+          "w": 12,
+          "h": 9
+        },
+        "fieldConfig": {
+          "defaults": {
+            "unit": "Bps",
+            "custom": {
+              "lineWidth": 1,
+              "fillOpacity": 35,
+              "stacking": {
+                "mode": "normal",
+                "group": "A"
+              },
+              "showPoints": "never",
+              "spanNulls": true
+            },
+            "min": 0
+          },
+          "overrides": []
+        },
+        "options": {
+          "legend": {
+            "displayMode": "table",
+            "placement": "bottom",
+            "calcs": [
+              "mean",
+              "max"
+            ]
+          },
+          "tooltip": {
+            "mode": "multi",
+            "sort": "desc"
+          }
+        },
+        "targets": [
+          {
+            "datasource": {
+              "type": "prometheus",
+              "uid": "${datasource}"
+            },
+            "expr": "sum by (pod) (rate(loki_dataobj_flight_archive_uncompressed_bytes_total{cluster=\"$cluster\", namespace=\"$namespace\", job=\"$job\"}[$__rate_interval]))",
+            "legendFormat": "{{pod}} archive uncompressed",
+            "refId": "A",
+            "range": true,
+            "instant": false
+          },
+          {
+            "datasource": {
+              "type": "prometheus",
+              "uid": "${datasource}"
+            },
+            "expr": "sum by (pod) (rate(loki_dataobj_flight_bytes_served_total{cluster=\"$cluster\", namespace=\"$namespace\", job=\"$job\"}[$__rate_interval]))",
+            "legendFormat": "{{pod}} Arrow served",
+            "refId": "B",
+            "range": true,
+            "instant": false
+          }
+        ]
+      },
+      {
+        "type": "timeseries",
+        "title": "Query latency \u2014 live path (query-frontend)",
+        "description": "End-to-end LogQL request latency at the query-frontend: planning, splitting, every sub-query, merge.",
+        "datasource": {
+          "type": "prometheus",
+          "uid": "${datasource}"
+        },
+        "id": 17,
+        "gridPos": {
+          "x": 0,
+          "y": 56,
+          "w": 12,
+          "h": 8
+        },
+        "fieldConfig": {
+          "defaults": {
+            "unit": "s",
+            "custom": {
+              "lineWidth": 1,
+              "fillOpacity": 10,
+              "stacking": {
+                "mode": "none",
+                "group": "A"
+              },
+              "showPoints": "never",
+              "spanNulls": true
+            },
+            "min": 0
+          },
+          "overrides": []
+        },
+        "options": {
+          "legend": {
+            "displayMode": "table",
+            "placement": "bottom",
+            "calcs": [
+              "mean",
+              "max"
+            ]
+          },
+          "tooltip": {
+            "mode": "multi",
+            "sort": "desc"
+          }
+        },
+        "targets": [
+          {
+            "datasource": {
+              "type": "prometheus",
+              "uid": "${datasource}"
+            },
+            "expr": "histogram_quantile(0.50, sum by (le, route) (rate(loki_request_duration_seconds_bucket{cluster=\"$cluster\", namespace=\"$namespace\", job=~\"$frontend_job\", route=~\"loki_api_v1_query|loki_api_v1_query_range\"}[$__rate_interval])))",
+            "legendFormat": "p50 {{route}}",
+            "refId": "A",
+            "range": true,
+            "instant": false
+          },
+          {
+            "datasource": {
+              "type": "prometheus",
+              "uid": "${datasource}"
+            },
+            "expr": "histogram_quantile(0.99, sum by (le, route) (rate(loki_request_duration_seconds_bucket{cluster=\"$cluster\", namespace=\"$namespace\", job=~\"$frontend_job\", route=~\"loki_api_v1_query|loki_api_v1_query_range\"}[$__rate_interval])))",
+            "legendFormat": "p99 {{route}}",
+            "refId": "B",
+            "range": true,
+            "instant": false
+          }
+        ]
+      },
+      {
+        "type": "timeseries",
+        "title": "Query latency \u2014 SQL gateway (per statement)",
+        "description": "The SQL counterpart of the frontend panel: one observation per statement on dataobj-sql, from parse to the last result row (planning, every Flight DoGet the plan fans out into, and DataFusion's sort/join/aggregate). kind=query are data queries, kind=catalog Grafana's schema probes. 'Scan duration per endpoint' below is per ticket, thousands of which make up one statement, so it is not latency. Needs a gateway image with --metrics-addr.",
+        "datasource": {
+          "type": "prometheus",
+          "uid": "${datasource}"
+        },
+        "id": 18,
+        "gridPos": {
+          "x": 12,
+          "y": 56,
+          "w": 12,
+          "h": 8
+        },
+        "fieldConfig": {
+          "defaults": {
+            "unit": "s",
+            "custom": {
+              "lineWidth": 1,
+              "fillOpacity": 10,
+              "stacking": {
+                "mode": "none",
+                "group": "A"
+              },
+              "showPoints": "never",
+              "spanNulls": true
+            },
+            "min": 0
+          },
+          "overrides": []
+        },
+        "options": {
+          "legend": {
+            "displayMode": "table",
+            "placement": "bottom",
+            "calcs": [
+              "mean",
+              "max"
+            ]
+          },
+          "tooltip": {
+            "mode": "multi",
+            "sort": "desc"
+          }
+        },
+        "targets": [
+          {
+            "datasource": {
+              "type": "prometheus",
+              "uid": "${datasource}"
+            },
+            "expr": "histogram_quantile(0.50, sum by (le, kind) (rate(dataobj_sql_statement_duration_seconds_bucket{cluster=\"$cluster\", namespace=\"$namespace\", pod=~\"shadow-sql-gateway.*\"}[$__rate_interval])))",
+            "legendFormat": "p50 {{kind}}",
+            "refId": "A",
+            "range": true,
+            "instant": false
+          },
+          {
+            "datasource": {
+              "type": "prometheus",
+              "uid": "${datasource}"
+            },
+            "expr": "histogram_quantile(0.99, sum by (le, kind) (rate(dataobj_sql_statement_duration_seconds_bucket{cluster=\"$cluster\", namespace=\"$namespace\", pod=~\"shadow-sql-gateway.*\"}[$__rate_interval])))",
+            "legendFormat": "p99 {{kind}}",
+            "refId": "B",
+            "range": true,
+            "instant": false
+          },
+          {
+            "datasource": {
+              "type": "prometheus",
+              "uid": "${datasource}"
+            },
+            "expr": "sum(dataobj_sql_statements_in_flight{cluster=\"$cluster\", namespace=\"$namespace\", pod=~\"shadow-sql-gateway.*\"})",
+            "legendFormat": "statements in flight",
+            "refId": "C",
+            "range": true,
+            "instant": false
+          }
+        ]
+      },
+      {
+        "type": "row",
+        "title": "Cost \u2014 Flight scan service ($job)",
+        "id": 19,
+        "gridPos": {
+          "x": 0,
+          "y": 64,
+          "w": 24,
+          "h": 1
+        },
+        "collapsed": false,
+        "panels": []
+      },
+      {
+        "type": "stat",
+        "title": "$ / compressed GB",
+        "description": "Marginal cost of scanning the archive: (CPU + GET spend per second) / (compressed bytes fetched per second). Speed-independent to first order.",
+        "datasource": {
+          "type": "prometheus",
+          "uid": "${datasource}"
+        },
+        "id": 20,
+        "gridPos": {
+          "x": 0,
+          "y": 65,
+          "w": 8,
+          "h": 4
+        },
+        "fieldConfig": {
+          "defaults": {
+            "unit": "currencyUSD",
+            "color": {
+              "mode": "fixed",
+              "fixedColor": "green"
+            },
+            "decimals": 4
+          },
+          "overrides": []
+        },
+        "options": {
+          "reduceOptions": {
+            "calcs": [
+              "mean"
+            ],
+            "fields": "",
+            "values": false
+          },
+          "colorMode": "value",
+          "graphMode": "area",
+          "textMode": "value",
+          "orientation": "auto"
+        },
+        "targets": [
+          {
+            "datasource": {
+              "type": "prometheus",
+              "uid": "${datasource}"
+            },
+            "expr": "(sum(rate(process_cpu_seconds_total{cluster=\"$cluster\", namespace=\"$namespace\", job=\"$job\"}[$__rate_interval])) * $cpu_price / 3600 + sum(rate(loki_objstore_bucket_operations_total{cluster=\"$cluster\", namespace=\"$namespace\", job=\"$job\", operation=~\"get|get_range|iter|attributes\"}[$__rate_interval])) * $get_price / 1000) / (sum(rate(loki_dataobj_flight_archive_compressed_bytes_total{cluster=\"$cluster\", namespace=\"$namespace\", job=\"$job\"}[$__rate_interval])) / 1e9 > 0)",
+            "legendFormat": "",
+            "refId": "A",
+            "range": true,
+            "instant": false
+          }
+        ]
+      },
+      {
+        "type": "stat",
+        "title": "$ / uncompressed GB",
+        "description": "Same spend divided by the uncompressed bytes decoded, the unit the live Loki path reports (bytes processed). Compare with the baseline row.",
+        "datasource": {
+          "type": "prometheus",
+          "uid": "${datasource}"
+        },
+        "id": 21,
+        "gridPos": {
+          "x": 8,
+          "y": 65,
+          "w": 8,
+          "h": 4
+        },
+        "fieldConfig": {
+          "defaults": {
+            "unit": "currencyUSD",
+            "color": {
+              "mode": "fixed",
+              "fixedColor": "green"
+            },
+            "decimals": 5
+          },
+          "overrides": []
+        },
+        "options": {
+          "reduceOptions": {
+            "calcs": [
+              "mean"
+            ],
+            "fields": "",
+            "values": false
+          },
+          "colorMode": "value",
+          "graphMode": "area",
+          "textMode": "value",
+          "orientation": "auto"
+        },
+        "targets": [
+          {
+            "datasource": {
+              "type": "prometheus",
+              "uid": "${datasource}"
+            },
+            "expr": "(sum(rate(process_cpu_seconds_total{cluster=\"$cluster\", namespace=\"$namespace\", job=\"$job\"}[$__rate_interval])) * $cpu_price / 3600 + sum(rate(loki_objstore_bucket_operations_total{cluster=\"$cluster\", namespace=\"$namespace\", job=\"$job\", operation=~\"get|get_range|iter|attributes\"}[$__rate_interval])) * $get_price / 1000) / (sum(rate(loki_dataobj_flight_archive_uncompressed_bytes_total{cluster=\"$cluster\", namespace=\"$namespace\", job=\"$job\"}[$__rate_interval])) / 1e9 > 0)",
+            "legendFormat": "",
+            "refId": "A",
+            "range": true,
+            "instant": false
+          }
+        ]
+      },
+      {
+        "type": "stat",
+        "title": "$ / hour scanning",
+        "description": "Spend rate of this process at the configured prices while it is busy.",
+        "datasource": {
+          "type": "prometheus",
+          "uid": "${datasource}"
+        },
+        "id": 22,
+        "gridPos": {
+          "x": 16,
+          "y": 65,
+          "w": 8,
+          "h": 4
+        },
+        "fieldConfig": {
+          "defaults": {
+            "unit": "currencyUSD",
+            "color": {
+              "mode": "fixed",
+              "fixedColor": "green"
+            },
+            "decimals": 3
+          },
+          "overrides": []
+        },
+        "options": {
+          "reduceOptions": {
+            "calcs": [
+              "mean"
+            ],
+            "fields": "",
+            "values": false
+          },
+          "colorMode": "value",
+          "graphMode": "area",
+          "textMode": "value",
+          "orientation": "auto"
+        },
+        "targets": [
+          {
+            "datasource": {
+              "type": "prometheus",
+              "uid": "${datasource}"
+            },
+            "expr": "(sum(rate(process_cpu_seconds_total{cluster=\"$cluster\", namespace=\"$namespace\", job=\"$job\"}[$__rate_interval])) * $cpu_price / 3600 + sum(rate(loki_objstore_bucket_operations_total{cluster=\"$cluster\", namespace=\"$namespace\", job=\"$job\", operation=~\"get|get_range|iter|attributes\"}[$__rate_interval])) * $get_price / 1000) * 3600",
+            "legendFormat": "",
+            "refId": "A",
+            "range": true,
+            "instant": false
+          }
+        ]
+      },
+      {
+        "type": "stat",
+        "title": "CPU-s / compressed GB",
+        "description": "Locally ~190 for the row-oriented archive (every record in the window is decoded, whatever the query shape).",
+        "datasource": {
+          "type": "prometheus",
+          "uid": "${datasource}"
+        },
+        "id": 23,
+        "gridPos": {
+          "x": 0,
+          "y": 69,
+          "w": 8,
+          "h": 4
+        },
+        "fieldConfig": {
+          "defaults": {
+            "unit": "short",
+            "color": {
+              "mode": "fixed",
+              "fixedColor": "orange"
+            },
+            "decimals": 0
+          },
+          "overrides": []
+        },
+        "options": {
+          "reduceOptions": {
+            "calcs": [
+              "mean"
+            ],
+            "fields": "",
+            "values": false
+          },
+          "colorMode": "value",
+          "graphMode": "area",
+          "textMode": "value",
+          "orientation": "auto"
+        },
+        "targets": [
+          {
+            "datasource": {
+              "type": "prometheus",
+              "uid": "${datasource}"
+            },
+            "expr": "sum(rate(process_cpu_seconds_total{cluster=\"$cluster\", namespace=\"$namespace\", job=\"$job\"}[$__rate_interval])) / (sum(rate(loki_dataobj_flight_archive_compressed_bytes_total{cluster=\"$cluster\", namespace=\"$namespace\", job=\"$job\"}[$__rate_interval])) / 1e9 > 0)",
+            "legendFormat": "",
+            "refId": "A",
+            "range": true,
+            "instant": false
+          }
+        ]
+      },
+      {
+        "type": "stat",
+        "title": "CPU-s / uncompressed GB",
+        "description": "CPU seconds per GB of decoded archive data; the live path measured ~62 CPU-s per GB processed on 2026-10-02.",
+        "datasource": {
+          "type": "prometheus",
+          "uid": "${datasource}"
+        },
+        "id": 24,
+        "gridPos": {
+          "x": 8,
+          "y": 69,
+          "w": 8,
+          "h": 4
+        },
+        "fieldConfig": {
+          "defaults": {
+            "unit": "short",
+            "color": {
+              "mode": "fixed",
+              "fixedColor": "orange"
+            },
+            "decimals": 1
+          },
+          "overrides": []
+        },
+        "options": {
+          "reduceOptions": {
+            "calcs": [
+              "mean"
+            ],
+            "fields": "",
+            "values": false
+          },
+          "colorMode": "value",
+          "graphMode": "area",
+          "textMode": "value",
+          "orientation": "auto"
+        },
+        "targets": [
+          {
+            "datasource": {
+              "type": "prometheus",
+              "uid": "${datasource}"
+            },
+            "expr": "sum(rate(process_cpu_seconds_total{cluster=\"$cluster\", namespace=\"$namespace\", job=\"$job\"}[$__rate_interval])) / (sum(rate(loki_dataobj_flight_archive_uncompressed_bytes_total{cluster=\"$cluster\", namespace=\"$namespace\", job=\"$job\"}[$__rate_interval])) / 1e9 > 0)",
+            "legendFormat": "",
+            "refId": "A",
+            "range": true,
+            "instant": false
+          }
+        ]
+      },
+      {
+        "type": "stat",
+        "title": "CPU cores busy",
+        "description": "Average cores busy over the dashboard range. CPU-s / wall-s of a query is how many cores it actually used.",
+        "datasource": {
+          "type": "prometheus",
+          "uid": "${datasource}"
+        },
+        "id": 25,
+        "gridPos": {
+          "x": 16,
+          "y": 69,
+          "w": 8,
+          "h": 4
+        },
+        "fieldConfig": {
+          "defaults": {
+            "unit": "short",
+            "color": {
+              "mode": "fixed",
+              "fixedColor": "orange"
+            },
+            "decimals": 2
+          },
+          "overrides": []
+        },
+        "options": {
+          "reduceOptions": {
+            "calcs": [
+              "mean"
+            ],
+            "fields": "",
+            "values": false
+          },
+          "colorMode": "value",
+          "graphMode": "area",
+          "textMode": "value",
+          "orientation": "auto"
+        },
+        "targets": [
+          {
+            "datasource": {
+              "type": "prometheus",
+              "uid": "${datasource}"
+            },
+            "expr": "sum(rate(process_cpu_seconds_total{cluster=\"$cluster\", namespace=\"$namespace\", job=\"$job\"}[$__rate_interval]))",
+            "legendFormat": "",
+            "refId": "A",
+            "range": true,
+            "instant": false
+          }
+        ]
+      },
+      {
+        "type": "timeseries",
+        "title": "Bytes scanned / s",
+        "description": "For archive_logs cost follows compressed bytes fetched. For logs (data objects) it follows Arrow bytes served, since objects are read by column and page.",
+        "datasource": {
+          "type": "prometheus",
+          "uid": "${datasource}"
+        },
+        "id": 26,
+        "gridPos": {
+          "x": 0,
+          "y": 73,
+          "w": 12,
+          "h": 8
+        },
+        "fieldConfig": {
+          "defaults": {
+            "unit": "Bps",
+            "custom": {
+              "lineWidth": 1,
+              "fillOpacity": 10,
+              "stacking": {
+                "mode": "none",
+                "group": "A"
+              },
+              "showPoints": "never",
+              "spanNulls": true
+            },
+            "min": 0
+          },
+          "overrides": []
+        },
+        "options": {
+          "legend": {
+            "displayMode": "table",
+            "placement": "bottom",
+            "calcs": [
+              "mean",
+              "max"
+            ]
+          },
+          "tooltip": {
+            "mode": "multi",
+            "sort": "desc"
+          }
+        },
+        "targets": [
+          {
+            "datasource": {
+              "type": "prometheus",
+              "uid": "${datasource}"
+            },
+            "expr": "sum(rate(loki_dataobj_flight_archive_compressed_bytes_total{cluster=\"$cluster\", namespace=\"$namespace\", job=\"$job\"}[$__rate_interval]))",
+            "legendFormat": "archive compressed (fetched)",
+            "refId": "A",
+            "range": true,
+            "instant": false
+          },
+          {
+            "datasource": {
+              "type": "prometheus",
+              "uid": "${datasource}"
+            },
+            "expr": "sum(rate(loki_dataobj_flight_archive_uncompressed_bytes_total{cluster=\"$cluster\", namespace=\"$namespace\", job=\"$job\"}[$__rate_interval]))",
+            "legendFormat": "archive uncompressed (decoded)",
+            "refId": "B",
+            "range": true,
+            "instant": false
+          },
+          {
+            "datasource": {
+              "type": "prometheus",
+              "uid": "${datasource}"
+            },
+            "expr": "sum by (table) (rate(loki_dataobj_flight_bytes_served_total{cluster=\"$cluster\", namespace=\"$namespace\", job=\"$job\"}[$__rate_interval]))",
+            "legendFormat": "served to gateway: {{table}}",
+            "refId": "C",
+            "range": true,
+            "instant": false
+          }
+        ]
+      },
+      {
+        "type": "timeseries",
+        "title": "Object-store requests / s",
+        "description": "Loki registers one shared objstore counter per process (empty bucket label), so data-object and archive GETs are summed. 'archive objects fetched' isolates the archive side.",
+        "datasource": {
+          "type": "prometheus",
+          "uid": "${datasource}"
+        },
+        "id": 27,
+        "gridPos": {
+          "x": 12,
+          "y": 73,
+          "w": 12,
+          "h": 8
+        },
+        "fieldConfig": {
+          "defaults": {
+            "unit": "reqps",
+            "custom": {
+              "lineWidth": 1,
+              "fillOpacity": 10,
+              "stacking": {
+                "mode": "none",
+                "group": "A"
+              },
+              "showPoints": "never",
+              "spanNulls": true
+            },
+            "min": 0
+          },
+          "overrides": []
+        },
+        "options": {
+          "legend": {
+            "displayMode": "table",
+            "placement": "bottom",
+            "calcs": [
+              "mean",
+              "max"
+            ]
+          },
+          "tooltip": {
+            "mode": "multi",
+            "sort": "desc"
+          }
+        },
+        "targets": [
+          {
+            "datasource": {
+              "type": "prometheus",
+              "uid": "${datasource}"
+            },
+            "expr": "sum by (operation) (rate(loki_objstore_bucket_operations_total{cluster=\"$cluster\", namespace=\"$namespace\", job=\"$job\"}[$__rate_interval]))",
+            "legendFormat": "{{operation}}",
+            "refId": "A",
+            "range": true,
+            "instant": false
+          },
+          {
+            "datasource": {
+              "type": "prometheus",
+              "uid": "${datasource}"
+            },
+            "expr": "sum(rate(loki_dataobj_flight_archive_objects_fetched_total{cluster=\"$cluster\", namespace=\"$namespace\", job=\"$job\"}[$__rate_interval]))",
+            "legendFormat": "archive objects fetched",
+            "refId": "B",
+            "range": true,
+            "instant": false
+          }
+        ]
+      },
+      {
+        "type": "timeseries",
+        "title": "Cost rate by driver ($/h)",
+        "description": "Which lever matters. With ~2.5 KB archive objects, GET fees were expected to be the same order as CPU.",
+        "datasource": {
+          "type": "prometheus",
+          "uid": "${datasource}"
+        },
+        "id": 28,
+        "gridPos": {
+          "x": 0,
+          "y": 81,
+          "w": 12,
+          "h": 8
+        },
+        "fieldConfig": {
+          "defaults": {
+            "unit": "currencyUSD",
+            "custom": {
+              "lineWidth": 1,
+              "fillOpacity": 35,
+              "stacking": {
+                "mode": "normal",
+                "group": "A"
+              },
+              "showPoints": "never",
+              "spanNulls": true
+            },
+            "min": 0
+          },
+          "overrides": []
+        },
+        "options": {
+          "legend": {
+            "displayMode": "table",
+            "placement": "bottom",
+            "calcs": [
+              "mean",
+              "max"
+            ]
+          },
+          "tooltip": {
+            "mode": "multi",
+            "sort": "desc"
+          }
+        },
+        "targets": [
+          {
+            "datasource": {
+              "type": "prometheus",
+              "uid": "${datasource}"
+            },
+            "expr": "sum(rate(process_cpu_seconds_total{cluster=\"$cluster\", namespace=\"$namespace\", job=\"$job\"}[$__rate_interval])) * $cpu_price",
+            "legendFormat": "CPU",
+            "refId": "A",
+            "range": true,
+            "instant": false
+          },
+          {
+            "datasource": {
+              "type": "prometheus",
+              "uid": "${datasource}"
+            },
+            "expr": "sum(rate(loki_objstore_bucket_operations_total{cluster=\"$cluster\", namespace=\"$namespace\", job=\"$job\", operation=~\"get|get_range|iter|attributes\"}[$__rate_interval])) * $get_price / 1000 * 3600",
+            "legendFormat": "object-store requests",
+            "refId": "B",
+            "range": true,
+            "instant": false
+          }
+        ]
+      },
+      {
+        "type": "timeseries",
+        "title": "Mean archive object size",
+        "description": "Small objects mean cost is driven by request count, not bytes. Batching objects is the lever.",
+        "datasource": {
+          "type": "prometheus",
+          "uid": "${datasource}"
+        },
+        "id": 29,
+        "gridPos": {
+          "x": 12,
+          "y": 81,
+          "w": 12,
+          "h": 8
+        },
+        "fieldConfig": {
+          "defaults": {
+            "unit": "bytes",
+            "custom": {
+              "lineWidth": 1,
+              "fillOpacity": 10,
+              "stacking": {
+                "mode": "none",
+                "group": "A"
+              },
+              "showPoints": "never",
+              "spanNulls": true
+            },
+            "min": 0
+          },
+          "overrides": []
+        },
+        "options": {
+          "legend": {
+            "displayMode": "table",
+            "placement": "bottom",
+            "calcs": [
+              "mean",
+              "max"
+            ]
+          },
+          "tooltip": {
+            "mode": "multi",
+            "sort": "desc"
+          }
+        },
+        "targets": [
+          {
+            "datasource": {
+              "type": "prometheus",
+              "uid": "${datasource}"
+            },
+            "expr": "sum(rate(loki_dataobj_flight_archive_compressed_bytes_total{cluster=\"$cluster\", namespace=\"$namespace\", job=\"$job\"}[$__rate_interval])) / sum(rate(loki_dataobj_flight_archive_objects_fetched_total{cluster=\"$cluster\", namespace=\"$namespace\", job=\"$job\"}[$__rate_interval]))",
+            "legendFormat": "compressed bytes per object",
+            "refId": "A",
+            "range": true,
+            "instant": false
+          },
+          {
+            "datasource": {
+              "type": "prometheus",
+              "uid": "${datasource}"
+            },
+            "expr": "sum(rate(loki_dataobj_flight_archive_uncompressed_bytes_total{cluster=\"$cluster\", namespace=\"$namespace\", job=\"$job\"}[$__rate_interval])) / sum(rate(loki_dataobj_flight_archive_objects_fetched_total{cluster=\"$cluster\", namespace=\"$namespace\", job=\"$job\"}[$__rate_interval]))",
+            "legendFormat": "uncompressed bytes per object",
+            "refId": "B",
+            "range": true,
+            "instant": false
+          }
+        ]
+      },
+      {
+        "type": "row",
+        "title": "Speed \u2014 Flight scan service ($job)",
+        "id": 30,
+        "gridPos": {
+          "x": 0,
+          "y": 89,
+          "w": 24,
+          "h": 1
+        },
+        "collapsed": false,
+        "panels": []
+      },
+      {
+        "type": "timeseries",
+        "title": "Throughput per core",
+        "description": "Decode rate per core. Locally ~5 MB/s compressed, ~37 MB/s uncompressed. Cores needed = (bytes in window) / (this \u00d7 target seconds).",
+        "datasource": {
+          "type": "prometheus",
+          "uid": "${datasource}"
+        },
+        "id": 31,
+        "gridPos": {
+          "x": 0,
+          "y": 90,
+          "w": 12,
+          "h": 8
+        },
+        "fieldConfig": {
+          "defaults": {
+            "unit": "Bps",
+            "custom": {
+              "lineWidth": 1,
+              "fillOpacity": 10,
+              "stacking": {
+                "mode": "none",
+                "group": "A"
+              },
+              "showPoints": "never",
+              "spanNulls": true
+            },
+            "min": 0
+          },
+          "overrides": []
+        },
+        "options": {
+          "legend": {
+            "displayMode": "table",
+            "placement": "bottom",
+            "calcs": [
+              "mean",
+              "max"
+            ]
+          },
+          "tooltip": {
+            "mode": "multi",
+            "sort": "desc"
+          }
+        },
+        "targets": [
+          {
+            "datasource": {
+              "type": "prometheus",
+              "uid": "${datasource}"
+            },
+            "expr": "sum(rate(loki_dataobj_flight_archive_compressed_bytes_total{cluster=\"$cluster\", namespace=\"$namespace\", job=\"$job\"}[$__rate_interval])) / sum(rate(process_cpu_seconds_total{cluster=\"$cluster\", namespace=\"$namespace\", job=\"$job\"}[$__rate_interval]))",
+            "legendFormat": "compressed bytes / core-s",
+            "refId": "A",
+            "range": true,
+            "instant": false
+          },
+          {
+            "datasource": {
+              "type": "prometheus",
+              "uid": "${datasource}"
+            },
+            "expr": "sum(rate(loki_dataobj_flight_archive_uncompressed_bytes_total{cluster=\"$cluster\", namespace=\"$namespace\", job=\"$job\"}[$__rate_interval])) / sum(rate(process_cpu_seconds_total{cluster=\"$cluster\", namespace=\"$namespace\", job=\"$job\"}[$__rate_interval]))",
+            "legendFormat": "uncompressed bytes / core-s",
+            "refId": "B",
+            "range": true,
+            "instant": false
+          }
+        ]
+      },
+      {
+        "type": "timeseries",
+        "title": "Scan duration per endpoint (DoGet)",
+        "description": "Open to last batch for one ticket. The gateway runs tickets in parallel, so query wall time \u2248 max over tickets plus gateway work.",
+        "datasource": {
+          "type": "prometheus",
+          "uid": "${datasource}"
+        },
+        "id": 32,
+        "gridPos": {
+          "x": 12,
+          "y": 90,
+          "w": 12,
+          "h": 8
+        },
+        "fieldConfig": {
+          "defaults": {
+            "unit": "s",
+            "custom": {
+              "lineWidth": 1,
+              "fillOpacity": 10,
+              "stacking": {
+                "mode": "none",
+                "group": "A"
+              },
+              "showPoints": "never",
+              "spanNulls": true
+            },
+            "min": 0
+          },
+          "overrides": []
+        },
+        "options": {
+          "legend": {
+            "displayMode": "table",
+            "placement": "bottom",
+            "calcs": [
+              "mean",
+              "max"
+            ]
+          },
+          "tooltip": {
+            "mode": "multi",
+            "sort": "desc"
+          }
+        },
+        "targets": [
+          {
+            "datasource": {
+              "type": "prometheus",
+              "uid": "${datasource}"
+            },
+            "expr": "histogram_quantile(0.50, sum by (le, table) (rate(loki_dataobj_flight_scan_duration_seconds_bucket{cluster=\"$cluster\", namespace=\"$namespace\", job=\"$job\"}[$__rate_interval])))",
+            "legendFormat": "p50 {{table}}",
+            "refId": "A",
+            "range": true,
+            "instant": false
+          },
+          {
+            "datasource": {
+              "type": "prometheus",
+              "uid": "${datasource}"
+            },
+            "expr": "histogram_quantile(0.99, sum by (le, table) (rate(loki_dataobj_flight_scan_duration_seconds_bucket{cluster=\"$cluster\", namespace=\"$namespace\", job=\"$job\"}[$__rate_interval])))",
+            "legendFormat": "p99 {{table}}",
+            "refId": "B",
+            "range": true,
+            "instant": false
+          }
+        ]
+      },
+      {
+        "type": "timeseries",
+        "title": "Planning",
+        "description": "Fixed per-query overhead: metastore lookup or archive listing. ~25 ms locally; dominates only for windows under a few minutes.",
+        "datasource": {
+          "type": "prometheus",
+          "uid": "${datasource}"
+        },
+        "id": 33,
+        "gridPos": {
+          "x": 0,
+          "y": 98,
+          "w": 8,
+          "h": 8
+        },
+        "fieldConfig": {
+          "defaults": {
+            "unit": "s",
+            "custom": {
+              "lineWidth": 1,
+              "fillOpacity": 10,
+              "stacking": {
+                "mode": "none",
+                "group": "A"
+              },
+              "showPoints": "never",
+              "spanNulls": true
+            },
+            "min": 0
+          },
+          "overrides": []
+        },
+        "options": {
+          "legend": {
+            "displayMode": "table",
+            "placement": "bottom",
+            "calcs": [
+              "mean",
+              "max"
+            ]
+          },
+          "tooltip": {
+            "mode": "multi",
+            "sort": "desc"
+          }
+        },
+        "targets": [
+          {
+            "datasource": {
+              "type": "prometheus",
+              "uid": "${datasource}"
+            },
+            "expr": "histogram_quantile(0.99, sum by (le, table) (rate(loki_dataobj_flight_plan_duration_seconds_bucket{cluster=\"$cluster\", namespace=\"$namespace\", job=\"$job\"}[$__rate_interval])))",
+            "legendFormat": "plan p99 {{table}}",
+            "refId": "A",
+            "range": true,
+            "instant": false
+          },
+          {
+            "datasource": {
+              "type": "prometheus",
+              "uid": "${datasource}"
+            },
+            "expr": "histogram_quantile(0.99, sum by (le) (rate(loki_dataobj_flight_archive_list_duration_seconds_bucket{cluster=\"$cluster\", namespace=\"$namespace\", job=\"$job\"}[$__rate_interval])))",
+            "legendFormat": "archive list p99",
+            "refId": "B",
+            "range": true,
+            "instant": false
+          }
+        ]
+      },
+      {
+        "type": "timeseries",
+        "title": "Tickets per plan",
+        "description": "Parallelism available to the gateway: sections for data objects, object bundles for the archive.",
+        "datasource": {
+          "type": "prometheus",
+          "uid": "${datasource}"
+        },
+        "id": 34,
+        "gridPos": {
+          "x": 8,
+          "y": 98,
+          "w": 8,
+          "h": 8
+        },
+        "fieldConfig": {
+          "defaults": {
+            "unit": "short",
+            "custom": {
+              "lineWidth": 1,
+              "fillOpacity": 10,
+              "stacking": {
+                "mode": "none",
+                "group": "A"
+              },
+              "showPoints": "never",
+              "spanNulls": true
+            },
+            "min": 0
+          },
+          "overrides": []
+        },
+        "options": {
+          "legend": {
+            "displayMode": "table",
+            "placement": "bottom",
+            "calcs": [
+              "mean",
+              "max"
+            ]
+          },
+          "tooltip": {
+            "mode": "multi",
+            "sort": "desc"
+          }
+        },
+        "targets": [
+          {
+            "datasource": {
+              "type": "prometheus",
+              "uid": "${datasource}"
+            },
+            "expr": "sum by (table) (rate(loki_dataobj_flight_planned_tickets_sum{cluster=\"$cluster\", namespace=\"$namespace\", job=\"$job\"}[$__rate_interval])) / sum by (table) (rate(loki_dataobj_flight_planned_tickets_count{cluster=\"$cluster\", namespace=\"$namespace\", job=\"$job\"}[$__rate_interval]))",
+            "legendFormat": "{{table}}",
+            "refId": "A",
+            "range": true,
+            "instant": false
+          }
+        ]
+      },
+      {
+        "type": "timeseries",
+        "title": "Archive time split: decode vs fetch",
+        "description": "If fetch dominates, add concurrency; if decode dominates, the per-core rate is the ceiling.",
+        "datasource": {
+          "type": "prometheus",
+          "uid": "${datasource}"
+        },
+        "id": 35,
+        "gridPos": {
+          "x": 16,
+          "y": 98,
+          "w": 8,
+          "h": 8
+        },
+        "fieldConfig": {
+          "defaults": {
+            "unit": "percentunit",
+            "custom": {
+              "lineWidth": 1,
+              "fillOpacity": 35,
+              "stacking": {
+                "mode": "normal",
+                "group": "A"
+              },
+              "showPoints": "never",
+              "spanNulls": true
+            },
+            "min": 0,
+            "max": 1
+          },
+          "overrides": []
+        },
+        "options": {
+          "legend": {
+            "displayMode": "table",
+            "placement": "bottom",
+            "calcs": [
+              "mean",
+              "max"
+            ]
+          },
+          "tooltip": {
+            "mode": "multi",
+            "sort": "desc"
+          }
+        },
+        "targets": [
+          {
+            "datasource": {
+              "type": "prometheus",
+              "uid": "${datasource}"
+            },
+            "expr": "sum(rate(loki_dataobj_flight_archive_decode_duration_seconds_sum{cluster=\"$cluster\", namespace=\"$namespace\", job=\"$job\"}[$__rate_interval])) / (sum(rate(loki_dataobj_flight_archive_decode_duration_seconds_sum{cluster=\"$cluster\", namespace=\"$namespace\", job=\"$job\"}[$__rate_interval])) + sum(rate(loki_dataobj_flight_archive_fetch_duration_seconds_sum{cluster=\"$cluster\", namespace=\"$namespace\", job=\"$job\"}[$__rate_interval])))",
+            "legendFormat": "decode (CPU) share",
+            "refId": "A",
+            "range": true,
+            "instant": false
+          },
+          {
+            "datasource": {
+              "type": "prometheus",
+              "uid": "${datasource}"
+            },
+            "expr": "sum(rate(loki_dataobj_flight_archive_fetch_duration_seconds_sum{cluster=\"$cluster\", namespace=\"$namespace\", job=\"$job\"}[$__rate_interval])) / (sum(rate(loki_dataobj_flight_archive_decode_duration_seconds_sum{cluster=\"$cluster\", namespace=\"$namespace\", job=\"$job\"}[$__rate_interval])) + sum(rate(loki_dataobj_flight_archive_fetch_duration_seconds_sum{cluster=\"$cluster\", namespace=\"$namespace\", job=\"$job\"}[$__rate_interval])))",
+            "legendFormat": "fetch (network) share",
+            "refId": "B",
+            "range": true,
+            "instant": false
+          }
+        ]
+      },
+      {
+        "type": "timeseries",
+        "title": "Rows and records / s",
+        "description": "decoded \u226b matched means the archive layout forces decoding of records the predicate later drops.",
+        "datasource": {
+          "type": "prometheus",
+          "uid": "${datasource}"
+        },
+        "id": 36,
+        "gridPos": {
+          "x": 0,
+          "y": 106,
+          "w": 8,
+          "h": 8
+        },
+        "fieldConfig": {
+          "defaults": {
+            "unit": "short",
+            "custom": {
+              "lineWidth": 1,
+              "fillOpacity": 10,
+              "stacking": {
+                "mode": "none",
+                "group": "A"
+              },
+              "showPoints": "never",
+              "spanNulls": true
+            },
+            "min": 0
+          },
+          "overrides": []
+        },
+        "options": {
+          "legend": {
+            "displayMode": "table",
+            "placement": "bottom",
+            "calcs": [
+              "mean",
+              "max"
+            ]
+          },
+          "tooltip": {
+            "mode": "multi",
+            "sort": "desc"
+          }
+        },
+        "targets": [
+          {
+            "datasource": {
+              "type": "prometheus",
+              "uid": "${datasource}"
+            },
+            "expr": "sum by (table) (rate(loki_dataobj_flight_rows_served_total{cluster=\"$cluster\", namespace=\"$namespace\", job=\"$job\"}[$__rate_interval]))",
+            "legendFormat": "rows served {{table}}",
+            "refId": "A",
+            "range": true,
+            "instant": false
+          },
+          {
+            "datasource": {
+              "type": "prometheus",
+              "uid": "${datasource}"
+            },
+            "expr": "sum(rate(loki_dataobj_flight_archive_records_decoded_total{cluster=\"$cluster\", namespace=\"$namespace\", job=\"$job\"}[$__rate_interval]))",
+            "legendFormat": "archive records decoded",
+            "refId": "B",
+            "range": true,
+            "instant": false
+          },
+          {
+            "datasource": {
+              "type": "prometheus",
+              "uid": "${datasource}"
+            },
+            "expr": "sum(rate(loki_dataobj_flight_archive_records_matched_total{cluster=\"$cluster\", namespace=\"$namespace\", job=\"$job\"}[$__rate_interval]))",
+            "legendFormat": "archive records matched",
+            "refId": "C",
+            "range": true,
+            "instant": false
+          }
+        ]
+      },
+      {
+        "type": "timeseries",
+        "title": "Memory",
+        "description": "",
+        "datasource": {
+          "type": "prometheus",
+          "uid": "${datasource}"
+        },
+        "id": 37,
+        "gridPos": {
+          "x": 8,
+          "y": 106,
+          "w": 8,
+          "h": 8
+        },
+        "fieldConfig": {
+          "defaults": {
+            "unit": "bytes",
+            "custom": {
+              "lineWidth": 1,
+              "fillOpacity": 10,
+              "stacking": {
+                "mode": "none",
+                "group": "A"
+              },
+              "showPoints": "never",
+              "spanNulls": true
+            },
+            "min": 0
+          },
+          "overrides": []
+        },
+        "options": {
+          "legend": {
+            "displayMode": "table",
+            "placement": "bottom",
+            "calcs": [
+              "mean",
+              "max"
+            ]
+          },
+          "tooltip": {
+            "mode": "multi",
+            "sort": "desc"
+          }
+        },
+        "targets": [
+          {
+            "datasource": {
+              "type": "prometheus",
+              "uid": "${datasource}"
+            },
+            "expr": "sum(process_resident_memory_bytes{cluster=\"$cluster\", namespace=\"$namespace\", job=\"$job\"})",
+            "legendFormat": "RSS",
+            "refId": "A",
+            "range": true,
+            "instant": false
+          },
+          {
+            "datasource": {
+              "type": "prometheus",
+              "uid": "${datasource}"
+            },
+            "expr": "sum(container_memory_working_set_bytes{cluster=\"$cluster\", namespace=\"$namespace\", pod=~\"shadow-dataobj-flight.*\", container!=\"\"})",
+            "legendFormat": "working set (cgroup)",
+            "refId": "B",
+            "range": true,
+            "instant": false
+          }
+        ]
+      },
+      {
+        "type": "timeseries",
+        "title": "Scan errors / s",
+        "description": "",
+        "datasource": {
+          "type": "prometheus",
+          "uid": "${datasource}"
+        },
+        "id": 38,
+        "gridPos": {
+          "x": 16,
+          "y": 106,
+          "w": 8,
+          "h": 8
+        },
+        "fieldConfig": {
+          "defaults": {
+            "unit": "short",
+            "custom": {
+              "lineWidth": 1,
+              "fillOpacity": 10,
+              "stacking": {
+                "mode": "none",
+                "group": "A"
+              },
+              "showPoints": "never",
+              "spanNulls": true
+            },
+            "min": 0
+          },
+          "overrides": []
+        },
+        "options": {
+          "legend": {
+            "displayMode": "table",
+            "placement": "bottom",
+            "calcs": [
+              "mean",
+              "max"
+            ]
+          },
+          "tooltip": {
+            "mode": "multi",
+            "sort": "desc"
+          }
+        },
+        "targets": [
+          {
+            "datasource": {
+              "type": "prometheus",
+              "uid": "${datasource}"
+            },
+            "expr": "sum by (table) (rate(loki_dataobj_flight_scan_errors_total{cluster=\"$cluster\", namespace=\"$namespace\", job=\"$job\"}[$__rate_interval]))",
+            "legendFormat": "{{table}}",
+            "refId": "A",
+            "range": true,
+            "instant": false
+          }
+        ]
+      },
+      {
+        "type": "timeseries",
+        "title": "Scans in flight per pod",
+        "description": "Concurrent DoGet scans per replica, bounded by -dataobj-flight.max-concurrent-scans. The gateway's --max-partitions bounds the total per query.",
+        "datasource": {
+          "type": "prometheus",
+          "uid": "${datasource}"
+        },
+        "id": 39,
+        "gridPos": {
+          "x": 0,
+          "y": 114,
+          "w": 8,
+          "h": 8
+        },
+        "fieldConfig": {
+          "defaults": {
+            "unit": "short",
+            "custom": {
+              "lineWidth": 1,
+              "fillOpacity": 10,
+              "stacking": {
+                "mode": "none",
+                "group": "A"
+              },
+              "showPoints": "never",
+              "spanNulls": true
+            },
+            "min": 0
+          },
+          "overrides": []
+        },
+        "options": {
+          "legend": {
+            "displayMode": "table",
+            "placement": "bottom",
+            "calcs": [
+              "mean",
+              "max"
+            ]
+          },
+          "tooltip": {
+            "mode": "multi",
+            "sort": "desc"
+          }
+        },
+        "targets": [
+          {
+            "datasource": {
+              "type": "prometheus",
+              "uid": "${datasource}"
+            },
+            "expr": "sum by (pod) (loki_dataobj_flight_scans_in_flight{cluster=\"$cluster\", namespace=\"$namespace\", job=\"$job\"})",
+            "legendFormat": "{{pod}}",
+            "refId": "A",
+            "range": true,
+            "instant": false
+          }
+        ]
+      },
+      {
+        "type": "timeseries",
+        "title": "Scan queue wait",
+        "description": "Time a DoGet waited for a scan slot. Sustained waits mean the servers, not the gateway, are the bottleneck: add replicas or slots.",
+        "datasource": {
+          "type": "prometheus",
+          "uid": "${datasource}"
+        },
+        "id": 40,
+        "gridPos": {
+          "x": 8,
+          "y": 114,
+          "w": 8,
+          "h": 8
+        },
+        "fieldConfig": {
+          "defaults": {
+            "unit": "s",
+            "custom": {
+              "lineWidth": 1,
+              "fillOpacity": 10,
+              "stacking": {
+                "mode": "none",
+                "group": "A"
+              },
+              "showPoints": "never",
+              "spanNulls": true
+            },
+            "min": 0
+          },
+          "overrides": []
+        },
+        "options": {
+          "legend": {
+            "displayMode": "table",
+            "placement": "bottom",
+            "calcs": [
+              "mean",
+              "max"
+            ]
+          },
+          "tooltip": {
+            "mode": "multi",
+            "sort": "desc"
+          }
+        },
+        "targets": [
+          {
+            "datasource": {
+              "type": "prometheus",
+              "uid": "${datasource}"
+            },
+            "expr": "histogram_quantile(0.50, sum by (le) (rate(loki_dataobj_flight_scan_queue_duration_seconds_bucket{cluster=\"$cluster\", namespace=\"$namespace\", job=\"$job\"}[$__rate_interval])))",
+            "legendFormat": "p50",
+            "refId": "A",
+            "range": true,
+            "instant": false
+          },
+          {
+            "datasource": {
+              "type": "prometheus",
+              "uid": "${datasource}"
+            },
+            "expr": "histogram_quantile(0.99, sum by (le) (rate(loki_dataobj_flight_scan_queue_duration_seconds_bucket{cluster=\"$cluster\", namespace=\"$namespace\", job=\"$job\"}[$__rate_interval])))",
+            "legendFormat": "p99",
+            "refId": "B",
+            "range": true,
+            "instant": false
+          }
+        ]
+      },
+      {
+        "type": "timeseries",
+        "title": "Disk cache",
+        "description": "Read-through disk cache of object store reads (-dataobj-flight.disk-cache.dir). A warm run of the same query is all hits: its CPU is the decode cost with no object store traffic.",
+        "datasource": {
+          "type": "prometheus",
+          "uid": "${datasource}"
+        },
+        "id": 41,
+        "gridPos": {
+          "x": 16,
+          "y": 114,
+          "w": 8,
+          "h": 8
+        },
+        "fieldConfig": {
+          "defaults": {
+            "unit": "short",
+            "custom": {
+              "lineWidth": 1,
+              "fillOpacity": 10,
+              "stacking": {
+                "mode": "none",
+                "group": "A"
+              },
+              "showPoints": "never",
+              "spanNulls": true
+            },
+            "min": 0
+          },
+          "overrides": []
+        },
+        "options": {
+          "legend": {
+            "displayMode": "table",
+            "placement": "bottom",
+            "calcs": [
+              "mean",
+              "max"
+            ]
+          },
+          "tooltip": {
+            "mode": "multi",
+            "sort": "desc"
+          }
+        },
+        "targets": [
+          {
+            "datasource": {
+              "type": "prometheus",
+              "uid": "${datasource}"
+            },
+            "expr": "sum by (bucket) (rate(loki_dataobj_flight_disk_cache_hits_total{cluster=\"$cluster\", namespace=\"$namespace\", job=\"$job\"}[$__rate_interval]))",
+            "legendFormat": "hits/s {{bucket}}",
+            "refId": "A",
+            "range": true,
+            "instant": false
+          },
+          {
+            "datasource": {
+              "type": "prometheus",
+              "uid": "${datasource}"
+            },
+            "expr": "sum by (bucket) (rate(loki_dataobj_flight_disk_cache_misses_total{cluster=\"$cluster\", namespace=\"$namespace\", job=\"$job\"}[$__rate_interval]))",
+            "legendFormat": "misses/s {{bucket}}",
+            "refId": "B",
+            "range": true,
+            "instant": false
+          }
+        ]
+      },
+      {
+        "type": "row",
+        "title": "Baseline \u2014 live Loki query path in $namespace (queriers $querier_job, frontends $frontend_job)",
+        "id": 42,
+        "gridPos": {
+          "x": 0,
+          "y": 122,
+          "w": 24,
+          "h": 1
+        },
+        "collapsed": false,
+        "panels": []
+      },
+      {
+        "type": "stat",
+        "title": "Baseline $ per GB processed (uncompressed)",
+        "description": "Querier CPU + GET spend over LogQL bytes processed as recorded by the query-frontend (queriers also record it; counting both would double it). LogQL reports uncompressed bytes, the Flight row reports compressed: compare against the uncompressed line in 'Bytes scanned'. Includes queries answered from ingesters and caches, so it is a floor for the store path.",
+        "datasource": {
+          "type": "prometheus",
+          "uid": "${datasource}"
+        },
+        "id": 43,
+        "gridPos": {
+          "x": 0,
+          "y": 123,
+          "w": 6,
+          "h": 4
+        },
+        "fieldConfig": {
+          "defaults": {
+            "unit": "currencyUSD",
+            "color": {
+              "mode": "fixed",
+              "fixedColor": "purple"
+            },
+            "decimals": 4
+          },
+          "overrides": []
+        },
+        "options": {
+          "reduceOptions": {
+            "calcs": [
+              "mean"
+            ],
+            "fields": "",
+            "values": false
+          },
+          "colorMode": "value",
+          "graphMode": "area",
+          "textMode": "value",
+          "orientation": "auto"
+        },
+        "targets": [
+          {
+            "datasource": {
+              "type": "prometheus",
+              "uid": "${datasource}"
+            },
+            "expr": "(sum(rate(process_cpu_seconds_total{cluster=\"$cluster\", namespace=\"$namespace\", job=~\"$querier_job\"}[$__rate_interval])) * $cpu_price / 3600 + sum(rate(loki_objstore_bucket_operations_total{cluster=\"$cluster\", namespace=\"$namespace\", job=~\"$querier_job\", operation=~\"get|get_range|iter|attributes\"}[$__rate_interval])) * $get_price / 1000) / (sum(rate(loki_logql_querystats_bytes_processed_total{cluster=\"$cluster\", namespace=\"$namespace\", job=~\"$frontend_job\"}[$__rate_interval])) / 1e9)",
+            "legendFormat": "",
+            "refId": "A",
+            "range": true,
+            "instant": false
+          }
+        ]
+      },
+      {
+        "type": "stat",
+        "title": "Baseline CPU-s per GB processed",
+        "description": "",
+        "datasource": {
+          "type": "prometheus",
+          "uid": "${datasource}"
+        },
+        "id": 44,
+        "gridPos": {
+          "x": 6,
+          "y": 123,
+          "w": 6,
+          "h": 4
+        },
+        "fieldConfig": {
+          "defaults": {
+            "unit": "short",
+            "color": {
+              "mode": "fixed",
+              "fixedColor": "purple"
+            },
+            "decimals": 0
+          },
+          "overrides": []
+        },
+        "options": {
+          "reduceOptions": {
+            "calcs": [
+              "mean"
+            ],
+            "fields": "",
+            "values": false
+          },
+          "colorMode": "value",
+          "graphMode": "area",
+          "textMode": "value",
+          "orientation": "auto"
+        },
+        "targets": [
+          {
+            "datasource": {
+              "type": "prometheus",
+              "uid": "${datasource}"
+            },
+            "expr": "sum(rate(process_cpu_seconds_total{cluster=\"$cluster\", namespace=\"$namespace\", job=~\"$querier_job\"}[$__rate_interval])) / (sum(rate(loki_logql_querystats_bytes_processed_total{cluster=\"$cluster\", namespace=\"$namespace\", job=~\"$frontend_job\"}[$__rate_interval])) / 1e9)",
+            "legendFormat": "",
+            "refId": "A",
+            "range": true,
+            "instant": false
+          }
+        ]
+      },
+      {
+        "type": "stat",
+        "title": "Querier cores in use",
+        "description": "",
+        "datasource": {
+          "type": "prometheus",
+          "uid": "${datasource}"
+        },
+        "id": 45,
+        "gridPos": {
+          "x": 12,
+          "y": 123,
+          "w": 6,
+          "h": 4
+        },
+        "fieldConfig": {
+          "defaults": {
+            "unit": "short",
+            "color": {
+              "mode": "fixed",
+              "fixedColor": "purple"
+            },
+            "decimals": 1
+          },
+          "overrides": []
+        },
+        "options": {
+          "reduceOptions": {
+            "calcs": [
+              "mean"
+            ],
+            "fields": "",
+            "values": false
+          },
+          "colorMode": "value",
+          "graphMode": "area",
+          "textMode": "value",
+          "orientation": "auto"
+        },
+        "targets": [
+          {
+            "datasource": {
+              "type": "prometheus",
+              "uid": "${datasource}"
+            },
+            "expr": "sum(rate(process_cpu_seconds_total{cluster=\"$cluster\", namespace=\"$namespace\", job=~\"$querier_job\"}[$__rate_interval]))",
+            "legendFormat": "",
+            "refId": "A",
+            "range": true,
+            "instant": false
+          }
+        ]
+      },
+      {
+        "type": "stat",
+        "title": "LogQL bytes processed / s",
+        "description": "",
+        "datasource": {
+          "type": "prometheus",
+          "uid": "${datasource}"
+        },
+        "id": 46,
+        "gridPos": {
+          "x": 18,
+          "y": 123,
+          "w": 6,
+          "h": 4
+        },
+        "fieldConfig": {
+          "defaults": {
+            "unit": "Bps",
+            "color": {
+              "mode": "fixed",
+              "fixedColor": "purple"
+            }
+          },
+          "overrides": []
+        },
+        "options": {
+          "reduceOptions": {
+            "calcs": [
+              "mean"
+            ],
+            "fields": "",
+            "values": false
+          },
+          "colorMode": "value",
+          "graphMode": "area",
+          "textMode": "value",
+          "orientation": "auto"
+        },
+        "targets": [
+          {
+            "datasource": {
+              "type": "prometheus",
+              "uid": "${datasource}"
+            },
+            "expr": "sum(rate(loki_logql_querystats_bytes_processed_total{cluster=\"$cluster\", namespace=\"$namespace\", job=~\"$frontend_job\"}[$__rate_interval]))",
+            "legendFormat": "",
+            "refId": "A",
+            "range": true,
+            "instant": false
+          }
+        ]
+      },
+      {
+        "type": "timeseries",
+        "title": "Query latency (query-frontend)",
+        "description": "",
+        "datasource": {
+          "type": "prometheus",
+          "uid": "${datasource}"
+        },
+        "id": 47,
+        "gridPos": {
+          "x": 0,
+          "y": 127,
+          "w": 12,
+          "h": 8
+        },
+        "fieldConfig": {
+          "defaults": {
+            "unit": "s",
+            "custom": {
+              "lineWidth": 1,
+              "fillOpacity": 10,
+              "stacking": {
+                "mode": "none",
+                "group": "A"
+              },
+              "showPoints": "never",
+              "spanNulls": true
+            },
+            "min": 0
+          },
+          "overrides": []
+        },
+        "options": {
+          "legend": {
+            "displayMode": "table",
+            "placement": "bottom",
+            "calcs": [
+              "mean",
+              "max"
+            ]
+          },
+          "tooltip": {
+            "mode": "multi",
+            "sort": "desc"
+          }
+        },
+        "targets": [
+          {
+            "datasource": {
+              "type": "prometheus",
+              "uid": "${datasource}"
+            },
+            "expr": "histogram_quantile(0.50, sum by (le, route) (rate(loki_request_duration_seconds_bucket{cluster=\"$cluster\", namespace=\"$namespace\", job=~\"$frontend_job\", route=~\"loki_api_v1_query|loki_api_v1_query_range\"}[$__rate_interval])))",
+            "legendFormat": "p50 {{route}}",
+            "refId": "A",
+            "range": true,
+            "instant": false
+          },
+          {
+            "datasource": {
+              "type": "prometheus",
+              "uid": "${datasource}"
+            },
+            "expr": "histogram_quantile(0.99, sum by (le, route) (rate(loki_request_duration_seconds_bucket{cluster=\"$cluster\", namespace=\"$namespace\", job=~\"$frontend_job\", route=~\"loki_api_v1_query|loki_api_v1_query_range\"}[$__rate_interval])))",
+            "legendFormat": "p99 {{route}}",
+            "refId": "B",
+            "range": true,
+            "instant": false
+          }
+        ]
+      },
+      {
+        "type": "timeseries",
+        "title": "Per-query throughput distribution (LogQL)",
+        "description": "What a LogQL query achieves end to end today (uncompressed bytes). The Flight equivalent is 'Throughput per core' \u00d7 cores used.",
+        "datasource": {
+          "type": "prometheus",
+          "uid": "${datasource}"
+        },
+        "id": 48,
+        "gridPos": {
+          "x": 12,
+          "y": 127,
+          "w": 12,
+          "h": 8
+        },
+        "fieldConfig": {
+          "defaults": {
+            "unit": "Bps",
+            "custom": {
+              "lineWidth": 1,
+              "fillOpacity": 10,
+              "stacking": {
+                "mode": "none",
+                "group": "A"
+              },
+              "showPoints": "never",
+              "spanNulls": true
+            },
+            "min": 0
+          },
+          "overrides": []
+        },
+        "options": {
+          "legend": {
+            "displayMode": "table",
+            "placement": "bottom",
+            "calcs": [
+              "mean",
+              "max"
+            ]
+          },
+          "tooltip": {
+            "mode": "multi",
+            "sort": "desc"
+          }
+        },
+        "targets": [
+          {
+            "datasource": {
+              "type": "prometheus",
+              "uid": "${datasource}"
+            },
+            "expr": "histogram_quantile(0.50, sum by (le) (rate(loki_logql_querystats_bytes_processed_per_seconds_bucket{cluster=\"$cluster\", namespace=\"$namespace\", job=~\"$frontend_job\"}[$__rate_interval])))",
+            "legendFormat": "p50 bytes/s per query",
+            "refId": "A",
+            "range": true,
+            "instant": false
+          },
+          {
+            "datasource": {
+              "type": "prometheus",
+              "uid": "${datasource}"
+            },
+            "expr": "histogram_quantile(0.90, sum by (le) (rate(loki_logql_querystats_bytes_processed_per_seconds_bucket{cluster=\"$cluster\", namespace=\"$namespace\", job=~\"$frontend_job\"}[$__rate_interval])))",
+            "legendFormat": "p90 bytes/s per query",
+            "refId": "B",
+            "range": true,
+            "instant": false
+          }
+        ]
+      },
+      {
+        "type": "timeseries",
+        "title": "Query rate by route (query-frontend)",
+        "description": "",
+        "datasource": {
+          "type": "prometheus",
+          "uid": "${datasource}"
+        },
+        "id": 49,
+        "gridPos": {
+          "x": 0,
+          "y": 135,
+          "w": 8,
+          "h": 8
+        },
+        "fieldConfig": {
+          "defaults": {
+            "unit": "reqps",
+            "custom": {
+              "lineWidth": 1,
+              "fillOpacity": 10,
+              "stacking": {
+                "mode": "none",
+                "group": "A"
+              },
+              "showPoints": "never",
+              "spanNulls": true
+            },
+            "min": 0
+          },
+          "overrides": []
+        },
+        "options": {
+          "legend": {
+            "displayMode": "table",
+            "placement": "bottom",
+            "calcs": [
+              "mean",
+              "max"
+            ]
+          },
+          "tooltip": {
+            "mode": "multi",
+            "sort": "desc"
+          }
+        },
+        "targets": [
+          {
+            "datasource": {
+              "type": "prometheus",
+              "uid": "${datasource}"
+            },
+            "expr": "sum by (route, status_code) (rate(loki_request_duration_seconds_count{cluster=\"$cluster\", namespace=\"$namespace\", job=~\"$frontend_job\", route=~\"loki_api_v1_query|loki_api_v1_query_range\"}[$__rate_interval]))",
+            "legendFormat": "{{route}} {{status_code}}",
+            "refId": "A",
+            "range": true,
+            "instant": false
+          }
+        ]
+      },
+      {
+        "type": "timeseries",
+        "title": "Querier object-store requests / s",
+        "description": "",
+        "datasource": {
+          "type": "prometheus",
+          "uid": "${datasource}"
+        },
+        "id": 50,
+        "gridPos": {
+          "x": 8,
+          "y": 135,
+          "w": 8,
+          "h": 8
+        },
+        "fieldConfig": {
+          "defaults": {
+            "unit": "reqps",
+            "custom": {
+              "lineWidth": 1,
+              "fillOpacity": 10,
+              "stacking": {
+                "mode": "none",
+                "group": "A"
+              },
+              "showPoints": "never",
+              "spanNulls": true
+            },
+            "min": 0
+          },
+          "overrides": []
+        },
+        "options": {
+          "legend": {
+            "displayMode": "table",
+            "placement": "bottom",
+            "calcs": [
+              "mean",
+              "max"
+            ]
+          },
+          "tooltip": {
+            "mode": "multi",
+            "sort": "desc"
+          }
+        },
+        "targets": [
+          {
+            "datasource": {
+              "type": "prometheus",
+              "uid": "${datasource}"
+            },
+            "expr": "sum by (operation) (rate(loki_objstore_bucket_operations_total{cluster=\"$cluster\", namespace=\"$namespace\", job=~\"$querier_job\"}[$__rate_interval]))",
+            "legendFormat": "{{operation}}",
+            "refId": "A",
+            "range": true,
+            "instant": false
+          }
+        ]
+      },
+      {
+        "type": "timeseries",
+        "title": "Querier bytes fetched from object store / s",
+        "description": "",
+        "datasource": {
+          "type": "prometheus",
+          "uid": "${datasource}"
+        },
+        "id": 51,
+        "gridPos": {
+          "x": 16,
+          "y": 135,
+          "w": 8,
+          "h": 8
+        },
+        "fieldConfig": {
+          "defaults": {
+            "unit": "Bps",
+            "custom": {
+              "lineWidth": 1,
+              "fillOpacity": 10,
+              "stacking": {
+                "mode": "none",
+                "group": "A"
+              },
+              "showPoints": "never",
+              "spanNulls": true
+            },
+            "min": 0
+          },
+          "overrides": []
+        },
+        "options": {
+          "legend": {
+            "displayMode": "table",
+            "placement": "bottom",
+            "calcs": [
+              "mean",
+              "max"
+            ]
+          },
+          "tooltip": {
+            "mode": "multi",
+            "sort": "desc"
+          }
+        },
+        "targets": [
+          {
+            "datasource": {
+              "type": "prometheus",
+              "uid": "${datasource}"
+            },
+            "expr": "sum(rate(loki_objstore_bucket_operation_fetched_bytes_total{cluster=\"$cluster\", namespace=\"$namespace\", job=~\"$querier_job\"}[$__rate_interval]))",
+            "legendFormat": "fetched",
+            "refId": "A",
+            "range": true,
+            "instant": false
+          }
+        ]
+      }
+    ]
+  }
+}

@@ -1,0 +1,14 @@
+{
+  "apiVersion": "folder.grafana.app/v1",
+  "kind": "Folder",
+  "metadata": {
+    "name": "loki-dataobj-sql",
+    "annotations": {
+      "grafana.app/folder": "users"
+    }
+  },
+  "spec": {
+    "title": "Loki dataobj SQL (query in place)",
+    "description": "Dashboards for the Arrow Flight + DataFusion query-in-place prototype and its shadow deployment."
+  }
+}

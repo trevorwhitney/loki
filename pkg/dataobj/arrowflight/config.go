@@ -10,6 +10,7 @@ import (
 	"github.com/grafana/dskit/flagext"
 
 	"github.com/grafana/loki/v3/pkg/storage/bucket"
+	lokiring "github.com/grafana/loki/v3/pkg/util/ring"
 )
 
 // Config configures the dataobj-flight target: the Arrow Flight scan service
@@ -27,6 +28,25 @@ type Config struct {
 	ExtraMetadata flagext.StringSliceCSV `yaml:"extra_metadata"`
 	// PrefetchBytes is passed to the data object reader when opening objects.
 	PrefetchBytes int64 `yaml:"prefetch_bytes"`
+	// MaxCachedObjects bounds the opened data objects kept in memory;
+	// StreamsCacheBytes bounds the cached in-memory streams tables used to
+	// join labels into log rows. 0 means the package defaults.
+	MaxCachedObjects  int   `yaml:"max_cached_objects"`
+	StreamsCacheBytes int64 `yaml:"streams_cache_bytes"`
+	// MaxConcurrentScans bounds the DoGet calls served at once by this
+	// instance; further calls queue. 0 leaves scans unbounded.
+	MaxConcurrentScans int `yaml:"max_concurrent_scans"`
+	// DiskCache optionally caches object store reads on local disk so a
+	// repeated query measures CPU without object store traffic.
+	DiskCache DiskCacheConfig `yaml:"disk_cache"`
+
+	// RingEnabled makes the target join a ring of dataobj-flight instances
+	// and stamp every planned endpoint with the ring members that should
+	// serve it, so a Flight client spreads DoGet calls across the pool.
+	RingEnabled bool `yaml:"ring_enabled"`
+	// Ring configures the dataobj-flight ring. Its replication factor is the
+	// number of candidate servers offered per endpoint.
+	Ring lokiring.RingConfig `yaml:"ring" doc:"description=Ring of dataobj-flight instances, used to place scan endpoints when ring_enabled is true."`
 
 	Archive ArchiveServerConfig `yaml:"archive"`
 }
@@ -63,6 +83,14 @@ func (c *Config) RegisterFlags(f *flag.FlagSet) {
 	f.Var(&c.ExtraLabels, prefix+"extra-labels", "Experimental: Comma-separated label columns always present in the logs table.")
 	f.Var(&c.ExtraMetadata, prefix+"extra-metadata", "Experimental: Comma-separated structured metadata columns always present in the logs table.")
 	f.Int64Var(&c.PrefetchBytes, prefix+"prefetch-bytes", 0, "Experimental: Bytes to prefetch when opening a data object.")
+	f.IntVar(&c.MaxCachedObjects, prefix+"max-cached-objects", DefaultMaxCachedObjects, "Experimental: Opened data objects kept in memory by the scan service.")
+	f.Int64Var(&c.StreamsCacheBytes, prefix+"streams-cache-bytes", DefaultStreamsCacheBytes, "Experimental: Bytes of in-memory streams tables (stream ID to labels, per object) kept for joining labels into log rows; least recently used tables are dropped past it.")
+	f.IntVar(&c.MaxConcurrentScans, prefix+"max-concurrent-scans", 16, "Experimental: Maximum DoGet scans served at once by this instance; further scans wait for a slot. 0 means unbounded.")
+	f.StringVar(&c.DiskCache.Dir, prefix+"disk-cache.dir", "", "Experimental: Directory for a read-through disk cache of object store reads (data objects, metastore index and archive). Empty disables the cache.")
+	f.Int64Var(&c.DiskCache.MaxSizeBytes, prefix+"disk-cache.max-size-bytes", 0, "Experimental: Maximum bytes kept in the disk cache before least recently used entries are evicted. 0 means 10 GiB.")
+	f.Var(&c.DiskCache.Buckets, prefix+"disk-cache.buckets", "Experimental: Comma-separated stores that go through the disk cache: data (data objects and metastore index), archive. Empty means both. Leave out a store whose working set is far larger than the cache.")
+	f.BoolVar(&c.RingEnabled, prefix+"ring.enabled", false, "Experimental: Join a ring of dataobj-flight instances and put the ring members that should serve each planned endpoint on it as Flight locations.")
+	c.Ring.RegisterFlagsWithPrefix(prefix, "collectors/", f)
 
 	a := &c.Archive
 	f.BoolVar(&a.Enabled, prefix+"archive.enabled", false, "Experimental: Serve an archive bucket as the archive_logs table.")
@@ -79,7 +107,10 @@ func (c *Config) RegisterFlags(f *flag.FlagSet) {
 
 // NewArchiveSourceFromConfig opens the archive bucket described by cfg and
 // returns the archive_logs source.
-func NewArchiveSourceFromConfig(ctx context.Context, cfg ArchiveServerConfig, logger log.Logger) (*ArchiveSource, error) {
+//
+// With a cache directory configured, reads of archive objects go through
+// the disk cache described by cache (see [NewDiskCacheBucket]).
+func NewArchiveSourceFromConfig(ctx context.Context, cfg ArchiveServerConfig, cache DiskCacheConfig, cacheMetrics *DiskCacheMetrics, metrics *Metrics, logger log.Logger) (*ArchiveSource, error) {
 	if cfg.Prefix == "" {
 		return nil, fmt.Errorf("dataobj-flight.archive.prefix is required")
 	}
@@ -87,8 +118,12 @@ func NewArchiveSourceFromConfig(ctx context.Context, cfg ArchiveServerConfig, lo
 	if err != nil {
 		return nil, fmt.Errorf("opening archive bucket: %w", err)
 	}
+	cached, err := NewDiskCacheBucket(b, "archive", cache, cacheMetrics, logger)
+	if err != nil {
+		return nil, err
+	}
 	return NewArchiveSource(ctx, ArchiveConfig{
-		Bucket:           b,
+		Bucket:           cached,
 		Prefix:           cfg.Prefix,
 		Layout:           cfg.Layout,
 		IndexLabels:      cfg.IndexLabels,
@@ -96,6 +131,7 @@ func NewArchiveSourceFromConfig(ctx context.Context, cfg ArchiveServerConfig, lo
 		MetadataColumns:  metadataColumnsOrDefault(cfg.MetadataColumns),
 		ObjectsPerTicket: cfg.ObjectsPerTicket,
 		Concurrency:      cfg.Concurrency,
+		Metrics:          metrics,
 		Logger:           logger,
 	})
 }

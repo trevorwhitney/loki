@@ -1,3 +1,5 @@
 production/docker/.data
 .cache
 tools/dev/kafka/data
+tools/dataobj-sql/target
+tools/dataobj-sql/.cargo-home

@@ -330,6 +330,21 @@ sql-server: build/dataobj-flight dataobj-sql
 	until nc -z $(firstword $(subst :, ,$(FLIGHT_ADDR))) $(lastword $(subst :, ,$(FLIGHT_ADDR))) 2>/dev/null; do sleep 0.2; done; \
 	$(DATAOBJ_SQL_BIN) --addr http://$(FLIGHT_ADDR) --pg-addr $(PG_ADDR) --tenant $(TENANT)
 
+# sql-measure runs the query matrix of tools/sqlmeasure against a cell through
+# gcx: SQL to the dataobj-sql shadow datasource, LogQL to the live Loki
+# datasource, metrics from the cell's Prometheus. MEASURE_FROM is the window
+# start; MEASURE_WINDOWS the sizes; MEASURE_SUITES which suites to run
+# (archive, logs, logql, join). Needs gcx logged in to MEASURE_CONTEXT.
+MEASURE_CONTEXT ?= dev
+MEASURE_FROM ?= 2026-09-16T00:00:00Z
+MEASURE_WINDOWS ?= 6h,12h,24h
+MEASURE_SUITES ?= archive,logs,logql,join
+MEASURE_OUT ?= build/sqlmeasure-runs.jsonl
+.PHONY: sql-measure
+sql-measure:
+	@mkdir -p $(dir $(MEASURE_OUT))
+	@go run ../../../tools/sqlmeasure -context $(MEASURE_CONTEXT) -from $(MEASURE_FROM) -windows $(MEASURE_WINDOWS) -suites $(MEASURE_SUITES) -out $(MEASURE_OUT)
+
 sql-server-stop:
 	@pkill -f 'build/dataobj-flight' || true
 	@pkill -f 'dataobj-sql.*--pg-addr' || true

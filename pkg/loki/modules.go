@@ -81,6 +81,7 @@ import (
 	"github.com/grafana/loki/v3/pkg/scheduler/schedulerpb"
 	"github.com/grafana/loki/v3/pkg/scratch"
 	"github.com/grafana/loki/v3/pkg/storage"
+	"github.com/grafana/loki/v3/pkg/storage/archive"
 	"github.com/grafana/loki/v3/pkg/storage/bucket"
 	"github.com/grafana/loki/v3/pkg/storage/chunk/cache"
 	"github.com/grafana/loki/v3/pkg/storage/chunk/client"
@@ -152,6 +153,8 @@ const (
 	PartitionRing                   = "partition-ring"
 	DataObjExplorer                 = "dataobj-explorer"
 	DataObjFlight                   = "dataobj-flight"
+	DataObjFlightRing               = "dataobj-flight-ring"
+	ArchiveQuerier                  = "archive-querier"
 	DataObjBuilder                  = "dataobj-builder"
 	DataObjCompactionPlanner        = "dataobj-compaction-planner"
 	DataObjCompactionWorker         = "dataobj-compaction-worker"
@@ -564,6 +567,15 @@ func (t *Loki) initQuerier() (services.Service, error) {
 		t.Querier = querier.NewMultiTenantQuerier(t.Querier, util_log.Logger)
 	}
 
+	return t.initQuerierServices(logger, deleteStore)
+}
+
+// initQuerierServices wires t.Querier into the process: the HTTP API, the
+// routes a standalone querier registers itself, the tail endpoints and the
+// frontend/scheduler worker. It is shared by the querier and archive-querier
+// targets, which differ only in how t.Querier is built.
+func (t *Loki) initQuerierServices(logger log.Logger, deleteStore deletion.DeleteRequestsClient) (services.Service, error) {
+	var err error
 	querierWorkerServiceConfig := querier.WorkerServiceConfig{
 		AllEnabled:            t.Cfg.isTarget(All),
 		GrpcListenAddress:     t.Cfg.Server.GRPCListenAddress,
@@ -708,9 +720,11 @@ func (t *Loki) initQuerier() (services.Service, error) {
 	// is standalone ALL routes are registered externally, and when it's in the same process as a frontend,
 	// we disable the proxying of the tail routes in initQueryFrontend() and we still want these routes regiestered
 	// on the external router.
-	tailQuerier := tail.NewQuerier(t.ingesterQuerier, t.Querier, deleteStore, t.Overrides, t.Cfg.Querier.TailMaxDuration, tail.NewMetrics(prometheus.DefaultRegisterer), log.With(util_log.Logger, "component", "tail-querier"))
-	t.Server.HTTP.Path(constants.PathLokiTail).Methods("GET", "POST").Handler(httpMiddleware.Wrap(http.HandlerFunc(tailQuerier.TailHandler)))
-	t.Server.HTTP.Path(constants.PathPromTail).Methods("GET", "POST").Handler(httpMiddleware.Wrap(http.HandlerFunc(tailQuerier.TailHandler)))
+	if t.ingesterQuerier != nil {
+		tailQuerier := tail.NewQuerier(t.ingesterQuerier, t.Querier, deleteStore, t.Overrides, t.Cfg.Querier.TailMaxDuration, tail.NewMetrics(prometheus.DefaultRegisterer), log.With(util_log.Logger, "component", "tail-querier"))
+		t.Server.HTTP.Path(constants.PathLokiTail).Methods("GET", "POST").Handler(httpMiddleware.Wrap(http.HandlerFunc(tailQuerier.TailHandler)))
+		t.Server.HTTP.Path(constants.PathPromTail).Methods("GET", "POST").Handler(httpMiddleware.Wrap(http.HandlerFunc(tailQuerier.TailHandler)))
+	}
 
 	internalMiddlewares := []queryrangebase.Middleware{
 		serverutil.RecoveryMiddleware,
@@ -1728,6 +1742,7 @@ func (t *Loki) initMemberlistKV() (services.Service, error) {
 	t.Cfg.IngestLimits.LifecyclerConfig.RingConfig.KVStore.MemberlistKV = t.MemberlistKV.GetMemberlistKV
 	t.Cfg.IngestLimitsFrontend.LifecyclerConfig.RingConfig.KVStore.MemberlistKV = t.MemberlistKV.GetMemberlistKV
 	t.Cfg.UI.Ring.KVStore.MemberlistKV = t.MemberlistKV.GetMemberlistKV
+	t.Cfg.DataObjFlight.Ring.KVStore.MemberlistKV = t.MemberlistKV.GetMemberlistKV
 
 	t.Server.HTTP.Handle("/memberlist", t.MemberlistKV)
 
@@ -2202,16 +2217,25 @@ func (t *Loki) initDataObjFlight() (services.Service, error) {
 	logger := log.With(util_log.Logger, "component", "dataobj-flight")
 	ctx := context.Background()
 
+	flightMetrics, cacheMetrics := t.dataObjFlightMetrics()
+	// The cache sits under the metastore too, so a repeated query also plans
+	// from local disk.
+	store, err = arrowflight.NewDiskCacheBucket(store, "data", t.Cfg.DataObjFlight.DiskCache, cacheMetrics, logger)
+	if err != nil {
+		return nil, fmt.Errorf("opening disk cache: %w", err)
+	}
 	ms := metastore.NewObjectMetastore(store, t.Cfg.DataObj.Metastore, logger, t.metastoreMetrics)
 	catalog, err := arrowflight.NewMetastoreCatalog(ctx, arrowflight.MetastoreCatalogConfig{
-		Bucket:        store,
-		Metastore:     ms,
-		Tenant:        t.Cfg.DataObjFlight.Tenant,
-		SchemaWindow:  t.Cfg.DataObjFlight.SchemaWindow,
-		ExtraLabels:   t.Cfg.DataObjFlight.ExtraLabels,
-		ExtraMetadata: t.Cfg.DataObjFlight.ExtraMetadata,
-		PrefetchBytes: t.Cfg.DataObjFlight.PrefetchBytes,
-		Logger:        logger,
+		Bucket:            store,
+		Metastore:         ms,
+		Tenant:            t.Cfg.DataObjFlight.Tenant,
+		SchemaWindow:      t.Cfg.DataObjFlight.SchemaWindow,
+		ExtraLabels:       t.Cfg.DataObjFlight.ExtraLabels,
+		ExtraMetadata:     t.Cfg.DataObjFlight.ExtraMetadata,
+		PrefetchBytes:     t.Cfg.DataObjFlight.PrefetchBytes,
+		MaxCachedObjects:  t.Cfg.DataObjFlight.MaxCachedObjects,
+		StreamsCacheBytes: t.Cfg.DataObjFlight.StreamsCacheBytes,
+		Logger:            logger,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("opening metastore catalog: %w", err)
@@ -2219,17 +2243,125 @@ func (t *Loki) initDataObjFlight() (services.Service, error) {
 
 	sources := []arrowflight.Source{catalog}
 	if t.Cfg.DataObjFlight.Archive.Enabled {
-		archive, err := arrowflight.NewArchiveSourceFromConfig(ctx, t.Cfg.DataObjFlight.Archive, logger)
+		archive, err := t.getArchiveSource(ctx, logger)
 		if err != nil {
-			return nil, fmt.Errorf("opening archive: %w", err)
+			return nil, err
 		}
 		sources = append(sources, archive)
 	}
 
-	srv := arrowflight.NewServer(logger, sources...)
+	srv := arrowflight.NewServerWithMetrics(logger, flightMetrics, sources...).
+		WithMaxConcurrentScans(t.Cfg.DataObjFlight.MaxConcurrentScans)
+	if t.dataObjFlightRingManager != nil {
+		// Endpoints name the ring members that should serve them. The
+		// scheme must match how peers reach this gRPC server.
+		scheme := arrowflight.SchemeGRPCTCP
+		if t.Cfg.Server.GRPCTLSConfig.TLSCertPath != "" {
+			scheme = arrowflight.SchemeGRPCTLS
+		}
+		srv.WithLocator(arrowflight.NewRingLocator(t.dataObjFlightRingManager.Ring, scheme, logger))
+	}
 	flight.RegisterFlightServiceServer(t.Server.GRPC, srv)
-	level.Info(logger).Log("msg", "serving Arrow Flight scan service on the gRPC server", "tables", strings.Join(srv.Tables(), ","), "default_tenant", t.Cfg.DataObjFlight.Tenant)
+	level.Info(logger).Log("msg", "serving Arrow Flight scan service on the gRPC server", "tables", strings.Join(srv.Tables(), ","), "default_tenant", t.Cfg.DataObjFlight.Tenant, "ring", t.dataObjFlightRingManager != nil, "max_concurrent_scans", t.Cfg.DataObjFlight.MaxConcurrentScans, "disk_cache", t.Cfg.DataObjFlight.DiskCache.Dir != "")
 	return nil, nil
+}
+
+// dataObjFlightMetrics registers the Flight scan and disk cache metrics once
+// per process, however many of the targets that use them run.
+func (t *Loki) dataObjFlightMetrics() (*arrowflight.Metrics, *arrowflight.DiskCacheMetrics) {
+	t.dataObjFlightMetricsOnce.Do(func() {
+		t.dataObjFlightScanMetrics = arrowflight.NewMetrics(prometheus.DefaultRegisterer)
+		t.dataObjFlightCacheMetrics = arrowflight.NewDiskCacheMetrics(prometheus.DefaultRegisterer)
+	})
+	return t.dataObjFlightScanMetrics, t.dataObjFlightCacheMetrics
+}
+
+// getArchiveSource opens the archive configured by dataobj_flight.archive
+// once per process; the dataobj-flight and archive-querier targets share it.
+func (t *Loki) getArchiveSource(ctx context.Context, logger log.Logger) (*arrowflight.ArchiveSource, error) {
+	t.archiveSourceOnce.Do(func() {
+		if !t.Cfg.DataObjFlight.Archive.Enabled {
+			t.archiveSourceErr = errors.New("dataobj_flight.archive is not enabled")
+			return
+		}
+		flightMetrics, cacheMetrics := t.dataObjFlightMetrics()
+		src, err := arrowflight.NewArchiveSourceFromConfig(ctx, t.Cfg.DataObjFlight.Archive, t.Cfg.DataObjFlight.DiskCache, cacheMetrics, flightMetrics, logger)
+		if err != nil {
+			t.archiveSourceErr = fmt.Errorf("opening archive: %w", err)
+			return
+		}
+		t.archiveSource = src
+	})
+	return t.archiveSource, t.archiveSourceErr
+}
+
+// initArchiveQuerier is a querier whose only store is the archive configured
+// by dataobj_flight.archive: LogQL over archived logs through the standard
+// v1 engine, HTTP API and query-frontend worker. There are no ingesters to
+// query, and the v2 engine is kept off because it would read data objects.
+func (t *Loki) initArchiveQuerier() (services.Service, error) {
+	if !t.Cfg.ArchiveQuerier.Enabled {
+		return nil, errors.New("the archive-querier target needs -archive-querier.enabled")
+	}
+	logger := log.With(util_log.Logger, "component", "archive-querier")
+
+	src, err := t.getArchiveSource(context.Background(), logger)
+	if err != nil {
+		return nil, err
+	}
+	store := archive.NewStore(src, t.Cfg.ArchiveQuerier, logger)
+
+	t.Cfg.Querier.QueryStoreOnly = true
+	t.Cfg.Querier.QueryIngesterOnly = false
+	t.Cfg.QueryEngine.Enable = false
+	t.Cfg.Worker.MaxConcurrent = t.Cfg.Querier.MaxConcurrent
+
+	deleteStore, err := t.deleteRequestsClient("archive-querier", t.Overrides)
+	if err != nil {
+		return nil, err
+	}
+	t.Querier, err = querier.New(t.Cfg.Querier, store, nil, t.Overrides, deleteStore, logger)
+	if err != nil {
+		return nil, err
+	}
+	if t.Cfg.Querier.MultiTenantQueriesEnabled {
+		t.Querier = querier.NewMultiTenantQuerier(t.Querier, util_log.Logger)
+	}
+	level.Info(logger).Log("msg", "serving LogQL over the archive", "prefix", t.Cfg.DataObjFlight.Archive.Prefix, "layout", t.Cfg.DataObjFlight.Archive.Layout)
+	return t.initQuerierServices(logger, deleteStore)
+}
+
+// initDataObjFlightRing joins the ring of dataobj-flight instances when
+// -dataobj-flight.ring.enabled is set. Every instance is both a planner and a
+// scanner, so all of them register (server mode); the ring decides which of
+// them a planned endpoint names as its locations.
+func (t *Loki) initDataObjFlightRing() (services.Service, error) {
+	if !t.Cfg.DataObjFlight.RingEnabled {
+		return nil, nil
+	}
+	if t.Cfg.DataObjFlight.Ring.ListenPort == 0 {
+		// Flight is served on the gRPC server; that is the port to advertise.
+		t.Cfg.DataObjFlight.Ring.ListenPort = t.Cfg.Server.GRPCListenPort
+	}
+	rm, err := lokiring.NewRingManager(
+		"dataobj-flight",
+		lokiring.ServerMode,
+		t.Cfg.DataObjFlight.Ring,
+		t.Cfg.DataObjFlight.Ring.ReplicationFactor,
+		t.Cfg.DataObjFlight.Ring.NumTokens,
+		log.With(util_log.Logger, "component", "dataobj-flight-ring"),
+		prometheus.DefaultRegisterer,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("creating dataobj-flight ring manager: %w", err)
+	}
+	t.dataObjFlightRingManager = rm
+
+	t.Server.HTTP.Path("/dataobj-flight/ring").Methods("GET", "POST").Handler(rm)
+	if t.Cfg.InternalServer.Enable {
+		t.InternalServer.HTTP.Path("/dataobj-flight/ring").Methods("GET", "POST").Handler(rm)
+	}
+	return rm, nil
 }
 
 func (t *Loki) initUI() (services.Service, error) {

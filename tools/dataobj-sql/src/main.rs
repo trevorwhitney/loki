@@ -8,6 +8,7 @@
 //! ```
 
 mod exec;
+mod metrics;
 mod filters;
 mod pg;
 mod provider;
@@ -29,7 +30,7 @@ use serde::Deserialize;
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 use tonic::transport::Channel;
 
-use crate::provider::{DataobjTable, FlightClient, TenantInterceptor};
+use crate::provider::{ClientPool, DataobjTable, FlightClient, TenantInterceptor};
 
 #[derive(Parser)]
 #[command(about = "Run DataFusion SQL against Loki data objects over Arrow Flight")]
@@ -66,6 +67,26 @@ struct Args {
     #[arg(long, default_value_t = 0)]
     pg_max_connections: usize,
 
+    /// Maximum DataFusion partitions per scan, which is the number of DoGet
+    /// streams a query keeps open at once across the Flight servers. Each
+    /// partition reads its share of the planned endpoints one after another.
+    /// 0 opens every endpoint at once (memory on the servers then grows
+    /// with the plan, not with their size).
+    #[arg(long, default_value_t = 16)]
+    max_partitions: usize,
+
+    /// Serve Prometheus metrics (per-statement latency, counts, rows) on
+    /// HOST:PORT in --pg-addr mode. Empty disables the endpoint and the
+    /// timing hook.
+    #[arg(long, value_name = "HOST:PORT", default_value = "")]
+    metrics_addr: String,
+
+    /// Send every DoGet to --addr, ignoring the locations the server puts
+    /// on endpoints in ring mode. For debugging a pool, or when --addr is a
+    /// proxy that already balances per request.
+    #[arg(long)]
+    ignore_locations: bool,
+
     /// SQL statements to run, separated by ';'. Read from stdin when omitted.
     query: Vec<String>,
 }
@@ -90,9 +111,10 @@ async fn main() -> anyhow::Result<()> {
     // Every Flight call carries the tenant as X-Scope-OrgID, which Loki's
     // gRPC auth middleware requires and the scan service uses to pick the
     // tenant's data objects and archive.
-    let client: FlightClient =
-        FlightServiceClient::with_interceptor(channel, TenantInterceptor::new(&args.tenant)?)
-            .max_decoding_message_size(usize::MAX);
+    let tenant = TenantInterceptor::new(&args.tenant)?;
+    let client: FlightClient = FlightServiceClient::with_interceptor(channel, tenant.clone())
+        .max_decoding_message_size(usize::MAX);
+    let pool = ClientPool::new(client.clone(), tenant, !args.ignore_locations);
 
     // information_schema is what Grafana's query builder reads to list
     // tables and columns; pg_catalog is added on top in pgwire mode.
@@ -106,14 +128,27 @@ async fn main() -> anyhow::Result<()> {
         args.tables.clone()
     };
     for table in &tables {
-        let provider = DataobjTable::try_new(client.clone(), table)
+        let provider = DataobjTable::try_new(pool.clone(), table, args.max_partitions)
             .await
             .with_context(|| format!("fetching schema of table {table}"))?;
         ctx.register_table(provider.name().to_string(), Arc::new(provider))?;
     }
 
     if let Some(pg_addr) = &args.pg_addr {
-        return pg::serve(ctx, pg_addr, &args.tenant, args.pg_max_connections).await;
+        let metrics = if args.metrics_addr.is_empty() {
+            None
+        } else {
+            let m = metrics::Metrics::new()?;
+            let server = m.clone();
+            let addr = args.metrics_addr.clone();
+            tokio::spawn(async move {
+                if let Err(e) = server.serve(&addr).await {
+                    log::error!("metrics server: {e:#}");
+                }
+            });
+            Some(m)
+        };
+        return pg::serve(ctx, pg_addr, &args.tenant, args.pg_max_connections, metrics).await;
     }
 
     if args.serve {
